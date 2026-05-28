@@ -1,0 +1,8 @@
+flask
+flask-socketio
+flask-cors
+opencv-python-headless
+numpy
+requests
+# ultralytics        # 可选：需要 YOLO 时再安装
+# eventlet           # 可选：当前本地运行使用 threading 模式

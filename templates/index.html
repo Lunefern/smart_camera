@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>智能摄像头管理系统</title>
+  <script src="https://cdn.jsdelivr.net/npm/socket.io-client@4/dist/socket.io.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f0f2f5; color: #1a1a1a; }
+
+    header {
+      background: #fff; border-bottom: 1px solid #e5e7eb;
+      padding: 0 24px; height: 56px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #d1d5db; display: inline-block; margin-right: 6px; }
+    .status-dot.online { background: #22c55e; box-shadow: 0 0 0 3px #dcfce7; }
+
+    main { display: grid; grid-template-columns: 1fr 340px; gap: 16px; padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
+
+    /* 卡片通用：统一控制所有信息块的背景、边框和内边距，让页面层次保持一致。 */
+    .card { background: #fff; border-radius: 10px; border: 1px solid #e5e7eb; padding: 16px; }
+    .card-title { font-size: 13px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 12px; }
+
+    /* 摄像头视频区：左侧主视觉区域，优先保证画面不变形。 */
+    #camera-section { grid-column: 1; }
+    #video-container { position: relative; background: #111; border-radius: 8px; overflow: hidden; aspect-ratio: 16/9; }
+    #video-container img { width: 100%; height: 100%; object-fit: contain; display: block; }
+    #no-signal { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #6b7280; font-size: 14px; }
+    .cam-controls { display: flex; gap: 8px; margin-top: 10px; }
+    .btn { padding: 7px 16px; border-radius: 6px; border: 1px solid #e5e7eb; background: #fff; font-size: 13px; cursor: pointer; transition: background .15s; }
+    .btn:hover { background: #f3f4f6; }
+    .btn.primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+    .btn.primary:hover { background: #1d4ed8; }
+    .btn.danger  { background: #ef4444; color: #fff; border-color: #ef4444; }
+    .btn.danger:hover { background: #dc2626; }
+
+    /* 检测结果：这里当前承载的是关键帧摘要，所以用可滚动列表展示最新状态。 */
+    #detection-list { max-height: 120px; overflow-y: auto; margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+    .det-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 4px; background: #eff6ff; color: #1d4ed8; font-size: 12px; }
+    .det-tag .conf { color: #6b7280; }
+
+    /* 右侧面板：传感器、趋势图和告警集中放在这里，便于快速扫一眼系统状态。 */
+    aside { display: flex; flex-direction: column; gap: 14px; }
+
+    /* 传感器大数字：把最核心的两个指标放大，适合仪表盘式展示。 */
+    .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .metric { background: #f9fafb; border-radius: 8px; padding: 14px; text-align: center; }
+    .metric .value { font-size: 36px; font-weight: 700; line-height: 1; }
+    .metric .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+    .metric.temp .value { color: #ef4444; }
+    .metric.humi .value { color: #3b82f6; }
+
+    /* 折线图：用于观察短时间内的温湿度变化趋势。 */
+    .chart-wrap { height: 160px; }
+
+    /* 设备状态：给当前页面维护两个简单状态灯，便于直观判断是否在线。 */
+    .device-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f3f4f6; font-size: 13px; }
+    .device-row:last-child { border-bottom: none; }
+    .badge { padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 500; }
+    .badge.ok      { background: #dcfce7; color: #166534; }
+    .badge.warn    { background: #fef9c3; color: #854d0e; }
+    .badge.offline { background: #f3f4f6; color: #6b7280; }
+
+    /* 告警日志：把规则触发的信息按时间顺序追加，方便回溯。 */
+    #alert-list { max-height: 180px; overflow-y: auto; font-size: 12px; color: #6b7280; }
+    .alert-row { padding: 5px 0; border-bottom: 1px solid #f3f4f6; }
+    .alert-row .time { color: #9ca3af; margin-right: 6px; }
+    .alert-row.warn { color: #b45309; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>📷 智能摄像头管理系统</h1>
+  <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:#6b7280">
+    <span class="status-dot" id="ws-dot"></span>
+    <span id="ws-label">连接中…</span>
+  </div>
+</header>
+
+<main>
+  <!-- 左：摄像头 + 检测 -->
+  <section id="camera-section">
+    <div class="card" style="margin-bottom:14px">
+      <div class="card-title">实时视频流</div>
+      <div id="video-container">
+        <img id="video-frame" src="" alt="" style="display:none">
+        <div id="no-signal">暂无信号 — 请启动摄像头</div>
+      </div>
+      <div class="cam-controls">
+        <button class="btn primary" onclick="startCamera()">启动</button>
+        <button class="btn danger"  onclick="stopCamera()">停止</button>
+        <button class="btn"         onclick="requestFrame()">刷新帧</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">关键帧处理</div>
+      <div id="detection-list"><span style="font-size:13px;color:#9ca3af">等待关键帧…</span></div>
+    </div>
+  </section>
+
+  <!-- 右：传感器 + 设备状态 + 告警 -->
+  <aside>
+    <div class="card">
+      <div class="card-title">传感器数据</div>
+      <div class="metrics">
+        <div class="metric temp">
+          <div class="value" id="temp-val">--</div>
+          <div class="label">温度 °C</div>
+        </div>
+        <div class="metric humi">
+          <div class="value" id="humi-val">--</div>
+          <div class="label">湿度 %</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;font-size:12px;color:#9ca3af" id="sensor-time">--</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">温湿度趋势</div>
+      <div class="chart-wrap">
+        <canvas id="trend-chart"></canvas>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">设备状态</div>
+      <div id="device-list">
+        <div class="device-row">
+          <span>MCU-01</span>
+          <span class="badge offline" id="mcu-badge">离线</span>
+        </div>
+        <div class="device-row">
+          <span>摄像头</span>
+          <span class="badge offline" id="cam-badge">离线</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">告警日志</div>
+      <div id="alert-list"><div style="font-size:12px;color:#9ca3af">暂无告警</div></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+// ── WebSocket 连接 ─────────────────────────────────────────
+// 页面和后端的数据流主要靠 Socket.IO 承接，所以连接状态本身也要反映在 UI 上。
+const socket = io();
+
+socket.on("connect", () => {
+  document.getElementById("ws-dot").classList.add("online");
+  document.getElementById("ws-label").textContent = "已连接";
+});
+socket.on("disconnect", () => {
+  document.getElementById("ws-dot").classList.remove("online");
+  document.getElementById("ws-label").textContent = "断开";
+});
+
+// ── 传感器数据处理 ─────────────────────────────────────────
+// 这里用 Chart.js 维护一个轻量趋势图，适合实时追加而不是重绘整个历史数据集。
+const MAX_POINTS = 30;
+const tempData = [], humiData = [], labels = [];
+
+const ctx = document.getElementById("trend-chart").getContext("2d");
+const chart = new Chart(ctx, {
+  type: "line",
+  data: {
+    labels,
+    datasets: [
+      { label: "温度°C", data: tempData, borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,.08)", tension: 0.4, pointRadius: 2 },
+      { label: "湿度%",  data: humiData, borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,.08)", tension: 0.4, pointRadius: 2 }
+    ]
+  },
+  options: {
+    animation: false, responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { labels: { font: { size: 11 } } } },
+    scales: { x: { ticks: { maxTicksLimit: 6, font: { size: 10 } } }, y: { ticks: { font: { size: 10 } } } }
+  }
+});
+
+socket.on("sensor_update", (d) => {
+  if (d.temp === undefined || d.humi === undefined) {
+    return;
+  }
+  document.getElementById("temp-val").textContent = d.temp.toFixed(1);
+  document.getElementById("humi-val").textContent = d.humi.toFixed(1);
+  document.getElementById("sensor-time").textContent = "更新: " + new Date(d.timestamp).toLocaleTimeString();
+
+  // 只追加当前点，不重新拉取全量历史，这样性能更稳，也更接近实时仪表盘的使用方式。
+  const t = new Date(d.timestamp).toLocaleTimeString("zh", {hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  labels.push(t); tempData.push(d.temp); humiData.push(d.humi);
+  if (labels.length > MAX_POINTS) { labels.shift(); tempData.shift(); humiData.shift(); }
+  chart.update("none");
+
+  // 收到传感器数据，就认为 MCU 已在线。
+  const b = document.getElementById("mcu-badge");
+  b.textContent = "在线"; b.className = "badge ok";
+
+  // 一个非常基础的告警规则示例：温度超过阈值就往日志里打一条。
+  if (d.temp > 35) addAlert(`温度过高: ${d.temp}°C`, "warn");
+});
+
+// ── 检测结果处理 ───────────────────────────────────────────
+// 这里既兼容原来的 YOLO 结果，也兼容当前的关键帧结果。
+socket.on("detection_result", (d) => {
+  const list = document.getElementById("detection-list");
+  list.innerHTML = "";
+  if (!d.detections.length) {
+    list.innerHTML = '<span style="font-size:13px;color:#9ca3af">未检测到目标</span>';
+    return;
+  }
+  d.detections.forEach(det => {
+    const tag = document.createElement("span");
+    tag.className = "det-tag";
+    tag.innerHTML = `${det.label} <span class="conf">${(det.conf*100).toFixed(0)}%</span>`;
+    list.appendChild(tag);
+  });
+
+  // 如果后端同时带回了处理后的画面，就直接覆盖当前视频窗口。
+  if (d.frame_b64) showFrame(d.frame_b64);
+});
+
+socket.on("frame_update", (d) => {
+  const list = document.getElementById("detection-list");
+  list.innerHTML = "";
+
+  const tag = document.createElement("span");
+  tag.className = "det-tag";
+  tag.innerHTML = `关键帧 #${d.saved_count} <span class="conf">差异 ${(d.diff ?? 0).toFixed(2)}</span>`;
+  list.appendChild(tag);
+
+  const meta = document.createElement("div");
+  meta.style.cssText = "margin-top:8px;font-size:12px;color:#6b7280;line-height:1.5";
+  meta.innerHTML = `
+    <div>帧序号：${d.frame_index}</div>
+    <div>比较尺寸：${d.compare_size?.[0] ?? 320} × ${d.compare_size?.[1] ?? 180}</div>
+    ${d.saved_path ? `<div>已保存：${d.saved_path}</div>` : ""}
+  `;
+  list.appendChild(meta);
+
+  if (d.frame_b64) showFrame(d.frame_b64);
+});
+
+socket.on("frame", (d) => {
+  if (d.image) showFrame(d.image);
+});
+
+// ── 摄像头控制 ─────────────────────────────────────────────
+// 这两个按钮只是触发后端状态切换，不直接操作浏览器本地视频流。
+function showFrame(b64) {
+  const img = document.getElementById("video-frame");
+  img.src = "data:image/jpeg;base64," + b64;
+  img.style.display = "block";
+  document.getElementById("no-signal").style.display = "none";
+  document.getElementById("cam-badge").textContent = "在线";
+  document.getElementById("cam-badge").className = "badge ok";
+}
+
+function startCamera() {
+  fetch("/api/camera/start", {method:"POST"})
+    .then(r => r.json()).then(d => addAlert("摄像头与关键帧处理已启动"));
+}
+function stopCamera() {
+  fetch("/api/camera/stop", {method:"POST"})
+    .then(r => r.json()).then(() => {
+      document.getElementById("cam-badge").textContent = "离线";
+      document.getElementById("cam-badge").className = "badge offline";
+    });
+}
+function requestFrame() { socket.emit("request_frame"); }
+
+// ── 告警日志 ───────────────────────────────────────────────
+// 为了避免日志无限增长，这里只保留最近一批消息。
+function addAlert(msg, level = "info") {
+  const list = document.getElementById("alert-list");
+  if (list.querySelector("span")) list.innerHTML = "";
+  const row = document.createElement("div");
+  row.className = "alert-row" + (level === "warn" ? " warn" : "");
+  row.innerHTML = `<span class="time">${new Date().toLocaleTimeString()}</span>${msg}`;
+  list.prepend(row);
+  if (list.children.length > 50) list.lastChild.remove();
+}
+
+// 页面首次打开时先拉一次最新传感器状态，减少“全是空白”的等待感。
+fetch("/api/sensor/latest").then(r => r.json()).then(d => {
+  if (d.temp !== undefined) socket.emit("sensor_update", d);
+});
+</script>
+</body>
+</html>
