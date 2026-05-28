@@ -4,8 +4,9 @@ modules/camera_stream.py
 视频采集层。
 
 它的职责非常单一：从某个视频源持续读取帧，然后把“最新帧”提供给
-其他模块消费。这里既可以是本地摄像头，也可以是 RTSP 码流，甚至可以是
-仓库里的样例视频文件。
+其他模块消费。这里既可以是本地摄像头，也可以是 RTSP 码流。
+当前项目的主开发路径已经切到本地 MediaMTX 暴露的 RTSP 流：
+`rtsp://localhost:8554/webcam`。
 
 为了适配后面的关键帧处理器，这里额外维护了一个很短的队列：
 队列里永远尽量只保留最新帧，旧帧会被丢掉，从而降低延迟。
@@ -13,8 +14,10 @@ modules/camera_stream.py
 from __future__ import annotations
 
 import base64
+import os
 from pathlib import Path
 import queue
+import time
 import threading
 
 import cv2
@@ -28,6 +31,8 @@ class CameraStream:
         # 这个队列主要给“后续处理模块”消费。
         # 它刻意保持很小的容量，避免积压太多旧帧导致显示延迟越来越大。
         self.frame_queue: queue.Queue = queue.Queue(maxsize=2)
+        # 支持多个消费者同时订阅同一帧流，例如 YOLO 和关键帧抽取。
+        self._consumer_queues: list[queue.Queue] = [self.frame_queue]
         self._cap       = None
         self._thread    = None
         self._running   = False
@@ -35,6 +40,8 @@ class CameraStream:
         self._latest    = None
         self._active_source = None
         self._source_is_file = False
+        self._is_rtsp_source = False
+        self._reconnect_delay = 1.0
         # 摄像头句柄会被采集线程和停止逻辑同时访问，因此用锁保护。
         self._lock = threading.Lock()
 
@@ -56,6 +63,54 @@ class CameraStream:
             # 释放底层视频句柄，避免文件锁或摄像头占用问题。
             cap.release()
         print("[Camera] 已停止")
+
+    def switch_source(self, stream_url: str):
+        """切换视频源。
+
+        由于当前采集逻辑只维护一个活动句柄，最稳妥的切换方式是：
+        先停掉现有采集，再更新 URL，最后按需要重新启动。
+        """
+        was_running = self._running
+        self.stop()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+        self.stream_url = stream_url
+        self._latest = None
+        self._active_source = None
+        self._source_is_file = False
+        self._is_rtsp_source = False
+        self._reconnect_delay = 1.0
+
+        # 清空旧帧，避免切换时前端还短暂看到老视频源内容。
+        while not self.frame_queue.empty():
+            try:
+                self.frame_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        if was_running:
+            self.start()
+
+    def get_source_status(self) -> dict:
+        """返回给前端展示用的视频源状态。"""
+        return {
+            "requested_source": self.stream_url,
+            "active_source": self._active_source,
+            "is_running": self._running,
+            "is_rtsp": self._is_rtsp_source,
+            "is_file": self._source_is_file,
+        }
+
+    def register_consumer_queue(self, consumer_queue: queue.Queue):
+        """注册额外的帧消费者队列。"""
+        if consumer_queue not in self._consumer_queues:
+            self._consumer_queues.append(consumer_queue)
+
+    def unregister_consumer_queue(self, consumer_queue: queue.Queue):
+        """移除额外的帧消费者队列。"""
+        if consumer_queue in self._consumer_queues and consumer_queue is not self.frame_queue:
+            self._consumer_queues.remove(consumer_queue)
 
     def get_frame(self):
         """非阻塞获取最新帧。
@@ -80,7 +135,7 @@ class CameraStream:
     # ── 内部循环 ──────────────────────────────────────────────
     def _capture_loop(self):
         # 采集线程启动时先尝试打开可用视频源。
-        # 如果当前目标源不可用，会自动尝试样例视频和本机摄像头，尽量保证“能跑起来”。
+        # 如果当前目标源不可用，会自动退回到本机摄像头，尽量保证“能跑起来”。
         with self._lock:
             self._cap = self._open_capture()
             cap = self._cap
@@ -112,24 +167,18 @@ class CameraStream:
                     self._cap = self._open_capture()
                     cap = self._cap
                 if cap is None:
-                    # 重连失败时稍微等一下，避免一直高频重试。
-                    threading.Event().wait(1.0)
+                    # 重连失败时做指数退避，避免在 RTSP 不稳定时疯狂刷日志和占用 CPU。
+                    time.sleep(self._reconnect_delay)
+                    self._reconnect_delay = min(self._reconnect_delay * 1.5, 5.0)
                 continue
 
             # 保存最新帧，供快照接口和上层处理器使用。
             self._latest = frame
+            self._reconnect_delay = 1.0
 
-            # 将帧送入处理队列。
-            # 如果队列已满，先丢掉最旧的一帧，再塞入当前帧，
-            # 这样保证处理器始终更接近“最新现场画面”。
-            if not self.frame_queue.full():
-                self.frame_queue.put_nowait(frame)
-            else:
-                try:
-                    self.frame_queue.get_nowait()
-                except queue.Empty:
-                    pass
-                self.frame_queue.put_nowait(frame)
+            # 将帧广播给所有消费者队列。
+            # 任何一个处理器都不应该阻塞采集线程，因此每个队列都只保留最新帧。
+            self._broadcast_frame(frame)
 
             # 用简单等待代替忙轮询，降低 CPU 占用。
             threading.Event().wait(interval)
@@ -138,14 +187,29 @@ class CameraStream:
         # 尝试按优先级依次打开候选视频源：
         # 先开用户指定的源，再退回样例视频，最后尝试本机摄像头 0。
         for source in self._candidate_sources():
-            cap = cv2.VideoCapture(source)
+            cap = self._create_capture(source)
             if cap.isOpened():
                 self._active_source = source
                 self._source_is_file = isinstance(source, str) and Path(source).exists()
+                self._is_rtsp_source = isinstance(source, str) and source.lower().startswith("rtsp://")
                 print(f"[Camera] 打开视频源: {source}")
                 return cap
             cap.release()
         return None
+
+    def _create_capture(self, source):
+        # RTSP 流在 Windows 上更适合走 FFMPEG + TCP，能明显降低乱序包和丢包引发的解码错误。
+        if isinstance(source, str) and source.lower().startswith("rtsp://"):
+            os.environ.setdefault(
+                "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                "rtsp_transport;tcp|stimeout;5000000|max_delay;500000|fflags;nobuffer",
+            )
+            cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            return cap
+
+        # 其他类型源保持默认后端即可。
+        return cv2.VideoCapture(source)
 
     def _candidate_sources(self):
         sources = []
@@ -154,14 +218,11 @@ class CameraStream:
         if normalized is not None:
             sources.append(normalized)
 
-        # 如果仓库自带了样例视频，优先把它作为“本地可跑”的兜底方案。
-        sample = Path(__file__).resolve().parent.parent / "AviToFrame" / "tmp.avi"
-        if sample.exists() and sample not in sources:
-            sources.append(str(sample))
-
-        # 最后再尝试摄像头编号 0，避免用户没有配置时完全没法启动。
-        if 0 not in sources:
-            sources.append(0)
+        # 最后再尝试摄像头编号 0~3，覆盖大多数常见的本地采集设备编号。
+        # 这样即使用户没有手动指定，也能自动枚举更多本地视频源。
+        for index in range(4):
+            if index not in sources:
+                sources.append(index)
 
         return sources
 
@@ -180,3 +241,16 @@ class CameraStream:
                 return int(stripped)
             return stripped
         return source
+
+    def _broadcast_frame(self, frame):
+        for consumer_queue in list(self._consumer_queues):
+            if consumer_queue.full():
+                try:
+                    consumer_queue.get_nowait()
+                except queue.Empty:
+                    pass
+            try:
+                consumer_queue.put_nowait(frame)
+            except queue.Full:
+                # 即便刚刚清掉旧帧，个别队列仍可能因为竞争而满，直接跳过即可。
+                continue

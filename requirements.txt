@@ -1,8 +1,8 @@
 flask
 flask-socketio
 flask-cors
-opencv-python-headless
-numpy
+opencv-python==4.11.0.86
+numpy<2
 requests
-# ultralytics        # 可选：需要 YOLO 时再安装
+ultralytics
 # eventlet           # 可选：当前本地运行使用 threading 模式

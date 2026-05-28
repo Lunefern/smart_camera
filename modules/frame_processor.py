@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import queue
+import re
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +35,7 @@ class FastFrameProcessor:
         compare_height: int = 180,
         diff_threshold: float = 4.0,
         jpeg_quality: int = 80,
+        max_saved_images: int = 200,
     ):
         self.socketio = socketio
         self.store = store
@@ -42,6 +44,7 @@ class FastFrameProcessor:
         self.compare_height = compare_height
         self.diff_threshold = diff_threshold
         self.jpeg_quality = jpeg_quality
+        self.max_saved_images = max_saved_images
 
         # 处理器只消费摄像头的帧队列，不直接读取视频源。
         self._frame_queue: queue.Queue | None = None
@@ -53,6 +56,9 @@ class FastFrameProcessor:
         self._saved_count = 0
         # 最新一次被判定为关键帧的结果，供 WebSocket 连接时直接补发。
         self._latest_payload: dict | None = None
+        # 文件清理和保存可能由不同入口触发，因此单独加锁避免并发删除/写入冲突。
+        # 这里用 RLock，避免保存流程内部再次触发清理时发生死锁。
+        self._file_lock = threading.RLock()
 
         if self.output_dir:
             # 如果配置了输出目录，就在处理器启动前确保目录存在。
@@ -79,9 +85,42 @@ class FastFrameProcessor:
         self._running = False
         print("[FrameProcessor] 关键帧处理线程停止")
 
+    def reset_state(self):
+        """重置比较状态。
+
+        当视频源切换时，上一段视频的最后一帧不应该继续参与下一段视频的比较，
+        所以这里只清空“上一帧”上下文，保留历史统计计数，避免前端数字跳变过大。
+        """
+        self._prev_small_gray = None
+
     def get_latest_payload(self) -> dict:
         # 返回一份拷贝，避免外部修改内部缓存。
         return dict(self._latest_payload) if self._latest_payload else {}
+
+    def set_max_saved_images(self, max_saved_images: int):
+        """设置自动保留的最大图片数。"""
+        self.max_saved_images = max(1, int(max_saved_images))
+
+    def get_storage_status(self) -> dict:
+        """返回前端展示和调试用的存储状态。"""
+        files = self._list_saved_files()
+        total_size = sum(p.stat().st_size for p in files)
+        return {
+            "output_dir": str(self.output_dir) if self.output_dir else None,
+            "max_saved_images": self.max_saved_images,
+            "saved_file_count": len(files),
+            "total_size_bytes": total_size,
+            "total_size_mb": round(total_size / (1024 * 1024), 3),
+        }
+
+    def cleanup_old_images(self, keep_count: int | None = None) -> dict:
+        """手动或自动清理过旧图片，只保留最新若干张。"""
+        if not self.output_dir:
+            return {"removed_count": 0, "kept_count": 0, "status": "no_output_dir"}
+
+        keep_count = self.max_saved_images if keep_count is None else max(1, int(keep_count))
+        with self._file_lock:
+            return self._cleanup_locked(keep_count)
 
     def _process_loop(self):
         while self._running:
@@ -132,12 +171,21 @@ class FastFrameProcessor:
 
                 if self.output_dir:
                     # 关键帧除了推送到前端，也可以落盘，方便后续复查或做数据集。
-                    frame_path = self.output_dir / f"frame_{self._saved_count:04d}.jpg"
-                    cv2.imwrite(
-                        str(frame_path),
-                        frame,
-                        [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
-                    )
+                    with self._file_lock:
+                        frame_path = self.output_dir / f"frame_{self._saved_count:04d}.jpg"
+                        cv2.imwrite(
+                            str(frame_path),
+                            frame,
+                            [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality],
+                        )
+                        cleanup_result = self._cleanup_locked(self.max_saved_images)
+                        if cleanup_result["removed_count"]:
+                            print(
+                                f"[FrameProcessor] 自动清理旧图: "
+                                f"removed={cleanup_result['removed_count']}, "
+                                f"kept={cleanup_result['kept_count']}"
+                            )
+                        self.socketio.emit("frame_storage_update", self.get_storage_status())
                     payload["saved_path"] = str(frame_path)
 
                 self._latest_payload = payload
@@ -151,3 +199,43 @@ class FastFrameProcessor:
         # 将 OpenCV 图像压成 JPEG 后再 Base64 编码，便于 WebSocket 直接传输。
         _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         return base64.b64encode(buf).decode("utf-8")
+
+    def _list_saved_files(self) -> list[Path]:
+        if not self.output_dir or not self.output_dir.exists():
+            return []
+        files = [p for p in self.output_dir.glob("frame_*.jpg") if p.is_file()]
+
+        def sort_key(path: Path):
+            match = re.search(r"frame_(\d+)\.jpg$", path.name)
+            if match:
+                return int(match.group(1))
+            return path.stat().st_mtime
+
+        files.sort(key=sort_key)
+        return files
+
+    def _cleanup_locked(self, keep_count: int) -> dict:
+        files = self._list_saved_files()
+        if len(files) <= keep_count:
+            return {
+                "removed_count": 0,
+                "kept_count": len(files),
+                "status": "already_within_limit",
+            }
+
+        remove_files = files[:-keep_count]
+        removed = 0
+        for path in remove_files:
+            try:
+                path.unlink()
+                removed += 1
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                print(f"[FrameProcessor] 删除文件失败: {path} ({exc})")
+
+        return {
+            "removed_count": removed,
+            "kept_count": len(files) - removed,
+            "status": "cleaned",
+        }

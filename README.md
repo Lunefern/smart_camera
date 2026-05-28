@@ -1,15 +1,18 @@
 # Smart Camera
 
-当前版本已经做了本地化处理，默认会优先使用仓库自带的样例视频 [`AviToFrame/tmp.avi`](/E:/DOC2/PyCharm/smart_camera/AviToFrame/tmp.avi) 作为视频源，并结合 `AviToFrame` 里的快速抽帧思路做关键帧处理。
+当前版本默认会先用本地摄像头 `0` 做 YOLO 识别，前端直接显示带框画面；RTSP 仍然保留在切换菜单里，后续可以切过去接其他流，并结合 `AviToFrame` 里的快速抽帧思路做关键帧处理。
+当前 YOLO 识别默认使用仓库内置的 [`YOLOModel/yolo26n.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/yolo26n.pt)。
 
 ## 功能
 
 - Web 页面展示实时画面
+- Web 页面展示 YOLO 识别后的带框画面
 - 基于相邻帧变化程度的关键帧抽取
 - 传感器数据面板与趋势图
 - WebSocket 实时推送
 - 支持将关键帧保存到本地目录
 - 支持切换到本地摄像头、RTSP 或其他视频文件
+- 支持后续扩展分类、分割等 YOLO 任务
 
 ## 项目结构
 
@@ -29,9 +32,6 @@ smart_camera/
 └─ AviToFrame/
    ├─ tmp.avi
    ├─ main.py
-   ├─ fast_save_absdiff.py
-   ├─ faster_downscale_absdiff.py
-   ├─ main_skimage.py
    └─ README.md
 ```
 
@@ -45,7 +45,8 @@ smart_camera/
 py -3 -m pip install -r requirements.txt
 ```
 
-当前默认配置不强依赖 YOLO 和 `eventlet`。
+当前默认配置会直接加载 YOLO 和 `ultralytics`，`eventlet` 仍然不是必需项。
+当前环境组合固定为 `opencv-python==4.11.0.86` 和 `numpy<2`，这是这套 YOLO 推理链路在本机上已经验证过的稳定组合。
 
 ## 本地运行
 
@@ -63,10 +64,12 @@ http://127.0.0.1:5000
 
 默认行为：
 
-- 自动优先读取 `AviToFrame/tmp.avi`
+- 自动优先读取本地摄像头 `0`
 - 自动启动视频采集
 - 自动启动关键帧处理
-- 页面会直接显示最新抽到的关键帧
+- 页面会直接显示 YOLO 识别后的带框画面
+- 页面顶部会显示当前视频源状态，并提供预留的切换菜单
+- 页面支持调整关键帧本地保留数量，并可手动触发清理
 
 ## 视频源配置
 
@@ -75,7 +78,8 @@ http://127.0.0.1:5000
 可以把它设置成以下任意一种：
 
 - 本地摄像头编号，例如 `0`
-- RTSP 地址，例如 `rtsp://192.168.1.10/stream`
+- RTSP 地址，例如 `rtsp://localhost:8554/webcam`
+- 其他 RTSP 地址，例如 `rtsp://192.168.1.10/stream`
 - 本地视频文件路径，例如 `D:\video\test.avi`
 
 示例：
@@ -84,6 +88,27 @@ http://127.0.0.1:5000
 $env:SMART_CAMERA_SOURCE="0"
 py -3 app.py
 ```
+
+## RTSP 推流示例
+
+先启动本地 MediaMTX，再用 `ffmpeg` 把摄像头推到默认地址：
+
+```bash
+ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 30 -bf 0 -f rtsp rtsp://localhost:8554/webcam
+```
+
+如果你使用的是其他输入设备，把 `video="icspring camera"` 改成你的实际设备名即可。
+
+如果仍然看到 H.264 解码报错，优先检查推流端是否稳定输出了关键帧，以及 MediaMTX 是否收到了完整的 TCP 连接。
+
+## 关键帧清理
+
+默认情况下，关键帧会保存在 `AviToFrame/frames_local/`，并且只保留最新的一定数量。
+
+- 默认保留数量：`200`
+- 可通过页面上的“关键帧本地存储”面板调整
+- 也可以通过环境变量 `FRAME_STORAGE_LIMIT` 在启动时修改默认保留值
+- 如果你想立即清理旧图，可以直接在页面里点“立即清理”
 
 ## 关键帧处理
 

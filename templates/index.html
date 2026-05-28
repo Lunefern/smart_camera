@@ -37,6 +37,24 @@
     .btn.primary:hover { background: #1d4ed8; }
     .btn.danger  { background: #ef4444; color: #fff; border-color: #ef4444; }
     .btn.danger:hover { background: #dc2626; }
+    .source-panel { margin-top: 12px; padding: 12px; border-radius: 8px; background: #f9fafb; border: 1px solid #eef2f7; }
+    .source-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+    .source-label { font-size: 12px; color: #6b7280; }
+    .source-value { font-size: 12px; color: #111827; word-break: break-all; }
+    .source-select, .source-input { width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; font-size: 13px; }
+    .source-select-wrap { min-width: 240px; flex: 1; }
+    .source-input-wrap { min-width: 240px; flex: 1; display: none; }
+    .source-badge { display: inline-flex; align-items: center; padding: 2px 8px; border-radius: 99px; font-size: 11px; font-weight: 600; }
+    .source-badge.on { background: #dcfce7; color: #166534; }
+    .source-badge.off { background: #f3f4f6; color: #6b7280; }
+    .source-badge.warn { background: #fef3c7; color: #92400e; }
+    .storage-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 10px; }
+    .storage-stat { background: #fff; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px 10px; }
+    .storage-stat .k { font-size: 11px; color: #6b7280; }
+    .storage-stat .v { font-size: 13px; font-weight: 600; color: #111827; margin-top: 2px; }
+    .storage-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    .storage-input { width: 120px; padding: 8px 10px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; font-size: 13px; }
+    .storage-note { font-size: 12px; color: #6b7280; margin-top: 8px; line-height: 1.4; }
 
     /* 检测结果：这里当前承载的是关键帧摘要，所以用可滚动列表展示最新状态。 */
     #detection-list { max-height: 120px; overflow-y: auto; margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
@@ -86,7 +104,7 @@
   <!-- 左：摄像头 + 检测 -->
   <section id="camera-section">
     <div class="card" style="margin-bottom:14px">
-      <div class="card-title">实时视频流</div>
+      <div class="card-title">YOLO 识别画面</div>
       <div id="video-container">
         <img id="video-frame" src="" alt="" style="display:none">
         <div id="no-signal">暂无信号 — 请启动摄像头</div>
@@ -96,11 +114,73 @@
         <button class="btn danger"  onclick="stopCamera()">停止</button>
         <button class="btn"         onclick="requestFrame()">刷新帧</button>
       </div>
+
+      <div class="source-panel">
+        <div class="source-label">当前视频源</div>
+        <div class="source-value" id="source-current">加载中…</div>
+        <div class="source-row" style="margin-top:10px">
+          <span class="source-badge off" id="source-status">未知</span>
+        </div>
+
+        <div class="source-row">
+          <div class="source-select-wrap">
+            <select id="source-select" class="source-select" onchange="onSourcePresetChange()"></select>
+          </div>
+          <button class="btn" onclick="applySourcePreset()">切换</button>
+        </div>
+
+        <div class="source-row">
+          <div class="source-input-wrap" id="source-input-wrap">
+            <input id="source-custom" class="source-input" type="text" placeholder="输入 RTSP 地址或本地视频路径">
+          </div>
+        </div>
+      </div>
+
+      <div class="source-panel">
+        <div class="source-label">关键帧本地存储</div>
+        <div class="source-value" id="storage-dir">加载中…</div>
+        <div class="storage-grid">
+          <div class="storage-stat">
+            <div class="k">已保存图片</div>
+            <div class="v" id="storage-count">--</div>
+          </div>
+          <div class="storage-stat">
+            <div class="k">占用空间</div>
+            <div class="v" id="storage-size">--</div>
+          </div>
+          <div class="storage-stat">
+            <div class="k">自动保留</div>
+            <div class="v" id="storage-limit">--</div>
+          </div>
+          <div class="storage-stat">
+            <div class="k">最近清理</div>
+            <div class="v" id="storage-clean-status">--</div>
+          </div>
+        </div>
+
+        <div class="storage-actions">
+          <input id="storage-limit-input" class="storage-input" type="number" min="1" step="1" placeholder="保留数量">
+          <button class="btn" onclick="updateStorageLimit()">更新保留数</button>
+          <button class="btn danger" onclick="cleanStorageNow()">立即清理</button>
+        </div>
+        <div class="storage-note">
+          自动清理会始终保留最新的若干张关键帧，避免 `frames_local` 目录无限增长。
+        </div>
+      </div>
+
+      <div class="source-panel">
+        <div class="source-label">YOLO 运行状态</div>
+        <div class="source-row" style="margin-top:8px">
+          <span class="source-badge off" id="yolo-status-badge">未知</span>
+        </div>
+        <div class="source-value" id="yolo-status-text">等待 YOLO 启动…</div>
+        <div class="storage-note" id="yolo-status-detail">模型与输入源信息会在启动后显示。</div>
+      </div>
     </div>
 
     <div class="card">
-      <div class="card-title">关键帧处理</div>
-      <div id="detection-list"><span style="font-size:13px;color:#9ca3af">等待关键帧…</span></div>
+      <div class="card-title">YOLO 识别结果</div>
+      <div id="detection-list"><span style="font-size:13px;color:#9ca3af">等待 YOLO 结果…</span></div>
     </div>
   </section>
 
@@ -163,6 +243,18 @@ socket.on("disconnect", () => {
   document.getElementById("ws-label").textContent = "断开";
 });
 
+socket.on("camera_source_update", (d) => {
+  renderSourceState(d);
+});
+
+socket.on("frame_storage_update", (d) => {
+  renderStorageState(d);
+});
+
+socket.on("yolo_status_update", (d) => {
+  renderYoloStatus(d);
+});
+
 // ── 传感器数据处理 ─────────────────────────────────────────
 // 这里用 Chart.js 维护一个轻量趋势图，适合实时追加而不是重绘整个历史数据集。
 const MAX_POINTS = 30;
@@ -212,8 +304,15 @@ socket.on("sensor_update", (d) => {
 socket.on("detection_result", (d) => {
   const list = document.getElementById("detection-list");
   list.innerHTML = "";
+  const metaHead = document.createElement("div");
+  metaHead.style.cssText = "font-size:12px;color:#6b7280;line-height:1.5;margin-bottom:6px";
+  metaHead.textContent = `来源: ${d.source_name ?? "--"} | 任务: ${d.task ?? "detect"}`;
+  list.appendChild(metaHead);
   if (!d.detections.length) {
-    list.innerHTML = '<span style="font-size:13px;color:#9ca3af">未检测到目标</span>';
+    const empty = document.createElement("span");
+    empty.style.cssText = "font-size:13px;color:#9ca3af";
+    empty.textContent = "未检测到目标";
+    list.appendChild(empty);
     return;
   }
   d.detections.forEach(det => {
@@ -244,8 +343,6 @@ socket.on("frame_update", (d) => {
     ${d.saved_path ? `<div>已保存：${d.saved_path}</div>` : ""}
   `;
   list.appendChild(meta);
-
-  if (d.frame_b64) showFrame(d.frame_b64);
 });
 
 socket.on("frame", (d) => {
@@ -265,7 +362,7 @@ function showFrame(b64) {
 
 function startCamera() {
   fetch("/api/camera/start", {method:"POST"})
-    .then(r => r.json()).then(d => addAlert("摄像头与关键帧处理已启动"));
+    .then(r => r.json()).then(d => addAlert("摄像头、YOLO 与关键帧处理已启动"));
 }
 function stopCamera() {
   fetch("/api/camera/stop", {method:"POST"})
@@ -275,6 +372,155 @@ function stopCamera() {
     });
 }
 function requestFrame() { socket.emit("request_frame"); }
+
+function renderSourceState(d) {
+  const current = document.getElementById("source-current");
+  const status = document.getElementById("source-status");
+  const select = document.getElementById("source-select");
+  const inputWrap = document.getElementById("source-input-wrap");
+  const customInput = document.getElementById("source-custom");
+
+  if (!d) return;
+
+  const requested = d.requested_source ?? "--";
+  const active = d.active_source ?? requested;
+  current.textContent = `请求源: ${requested} | 活动源: ${active ?? "--"}`;
+  status.textContent = d.is_running ? "运行中" : "已停止";
+  status.className = "source-badge " + (d.is_running ? "on" : "off");
+
+  if (d.options && !select.dataset.loaded) {
+    select.innerHTML = "";
+    d.options.forEach(opt => {
+      const option = document.createElement("option");
+      option.value = opt.value;
+      option.textContent = `${opt.label} - ${opt.description}`;
+      select.appendChild(option);
+    });
+    select.dataset.loaded = "1";
+  }
+
+  const presetValues = Array.from(select.options).map(opt => opt.value);
+  const matchedPreset = presetValues.includes(String(requested)) ? String(requested) : "__custom__";
+  select.value = matchedPreset;
+  inputWrap.style.display = matchedPreset === "__custom__" ? "block" : "none";
+  if (matchedPreset === "__custom__" && requested !== "--") {
+    customInput.value = requested;
+  }
+}
+
+function onSourcePresetChange() {
+  const select = document.getElementById("source-select");
+  const inputWrap = document.getElementById("source-input-wrap");
+  inputWrap.style.display = select.value === "__custom__" ? "block" : "none";
+}
+
+function applySourcePreset() {
+  const select = document.getElementById("source-select");
+  const custom = document.getElementById("source-custom");
+  const source = select.value === "__custom__" ? custom.value.trim() : select.value;
+
+  if (!source) {
+    addAlert("请输入可用的视频源地址", "warn");
+    return;
+  }
+
+  fetch("/api/camera/source", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({source})
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) {
+        addAlert("切换失败: " + d.error, "warn");
+        return;
+      }
+      renderSourceState(d);
+      addAlert("视频源已切换为: " + d.requested_source);
+    });
+}
+
+function renderStorageState(d) {
+  if (!d) return;
+
+  document.getElementById("storage-dir").textContent = d.output_dir ?? "--";
+  document.getElementById("storage-count").textContent = d.saved_file_count ?? 0;
+  document.getElementById("storage-size").textContent = (d.total_size_mb ?? 0).toFixed(3) + " MB";
+  document.getElementById("storage-limit").textContent = d.max_saved_images ?? "--";
+  document.getElementById("storage-clean-status").textContent = d.status ?? "ok";
+  document.getElementById("storage-limit-input").value = d.max_saved_images ?? "";
+}
+
+function renderYoloStatus(d) {
+  if (!d) return;
+
+  const badge = document.getElementById("yolo-status-badge");
+  const text = document.getElementById("yolo-status-text");
+  const detail = document.getElementById("yolo-status-detail");
+
+  const state = d.state ?? "unknown";
+  const stateLabel = {
+    idle: "待启动",
+    ready: "已就绪",
+    running: "运行中",
+    error: "异常",
+    stopped: "已停止",
+  }[state] ?? state;
+
+  badge.textContent = stateLabel;
+  badge.className = "source-badge " + (state === "running" || state === "ready" ? "on" : state === "error" ? "warn" : "off");
+  text.textContent = d.message ?? "暂无状态";
+  detail.innerHTML = `
+    <div>模型：${d.model_path ?? "--"}</div>
+    <div>输入源：${d.source_name ?? "--"}</div>
+    <div>任务：${d.task ?? "detect"}</div>
+  `;
+}
+
+function updateStorageLimit() {
+  const input = document.getElementById("storage-limit-input");
+  const maxSavedImages = parseInt(input.value, 10);
+  if (!Number.isInteger(maxSavedImages) || maxSavedImages < 1) {
+    addAlert("请输入大于 0 的保留数量", "warn");
+    return;
+  }
+
+  fetch("/api/frame/storage", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({max_saved_images: maxSavedImages})
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) {
+        addAlert("更新保留数量失败: " + d.error, "warn");
+        return;
+      }
+      renderStorageState(d);
+      addAlert("已更新自动保留数量为 " + d.max_saved_images);
+    });
+}
+
+function cleanStorageNow() {
+  const input = document.getElementById("storage-limit-input");
+  const keepCount = parseInt(input.value, 10);
+  const body = Number.isInteger(keepCount) && keepCount > 0 ? {keep_count: keepCount} : {};
+
+  fetch("/api/frame/cleanup", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(body)
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) {
+        addAlert("清理失败: " + d.error, "warn");
+        return;
+      }
+      renderStorageState(d);
+      addAlert(`已清理 ${d.removed_count ?? 0} 张旧图片`);
+    });
+}
 
 // ── 告警日志 ───────────────────────────────────────────────
 // 为了避免日志无限增长，这里只保留最近一批消息。
@@ -292,6 +538,14 @@ function addAlert(msg, level = "info") {
 fetch("/api/sensor/latest").then(r => r.json()).then(d => {
   if (d.temp !== undefined) socket.emit("sensor_update", d);
 });
+
+fetch("/api/camera/source")
+  .then(r => r.json())
+  .then(d => renderSourceState(d));
+
+fetch("/api/frame/storage")
+  .then(r => r.json())
+  .then(d => renderStorageState(d));
 </script>
 </body>
 </html>
