@@ -16,7 +16,10 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 
 class YoloProcessor:
@@ -188,5 +191,7 @@ class YoloProcessor:
     @staticmethod
     def _encode_frame(frame) -> str:
         # 和关键帧处理器一样，这里把图像压缩后再转 Base64，便于通过 WebSocket 发送。
+        if cv2 is None:
+            return ""
         _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         return base64.b64encode(buf).decode("utf-8")

@@ -15,9 +15,10 @@ import sqlite3
 import threading
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 
-
-DB_FILE = "smart_camera.db"
+# 数据库文件路径，固定在项目根目录下
+DB_FILE = str(Path(__file__).resolve().parent.parent / "smart_camera.db")
 
 
 class DataStore:
