@@ -5,3 +5,5 @@ ffmpeg -f dshow -i video="icspring camera"  -vcodec libx264  -preset ultrafast  
 ```
 
 //前端仅显示关键帧
+
+停止YOLO识别后显示 最后一帧 画面或者 无信号？

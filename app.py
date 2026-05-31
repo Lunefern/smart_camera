@@ -93,24 +93,26 @@ socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
 store    = DataStore()
 sensor   = SensorServer(socketio, store, host="0.0.0.0", port=9000)
 camera   = CameraStream(socketio, stream_url=DEFAULT_STREAM_SOURCE)
-yolo_queue = queue.Queue(maxsize=2)
-camera.register_consumer_queue(yolo_queue)
+frame_queue = queue.Queue(maxsize=2)
+camera.register_consumer_queue(frame_queue)
+
+# 关键帧处理器和 YOLO 处理器共享同一个帧队列。
+# 摄像头负责“采集”，处理器负责“消费并判断是否保存/识别”。
 yolo = YoloProcessor(
     socketio,
     store,
     model_path=str(YOLO_MODEL_PATH),
     source_name="local_camera_0",
 )
-yolo.bind_queue(yolo_queue)
+yolo.bind_queue(frame_queue)
+
 frame_processor = FastFrameProcessor(
     socketio,
     store,
     output_dir=str(BASE_DIR / "AviToFrame" / "frames_local"),
     max_saved_images=FRAME_STORAGE_LIMIT,
 )
-# 关键帧处理器和摄像头共享同一个帧队列。
-# 摄像头负责“采集”，处理器负责“消费并判断是否保存”。
-frame_processor.bind_queue(camera.frame_queue)
+frame_processor.bind_queue(frame_queue)
 
 # ── HTTP 路由 ─────────────────────────────────────────────────
 @app.route("/")

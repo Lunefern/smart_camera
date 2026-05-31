@@ -21,8 +21,12 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
-import cv2
-import numpy as np
+try:
+    import cv2
+    import numpy as np
+except ImportError:
+    cv2 = None
+    np = None
 
 
 class FastFrameProcessor:
@@ -123,6 +127,11 @@ class FastFrameProcessor:
             return self._cleanup_locked(keep_count)
 
     def _process_loop(self):
+        if cv2 is None or np is None:
+            print("[FrameProcessor] 缺少 opencv-python 或 numpy，关键帧处理已禁用")
+            self._running = False
+            return
+
         while self._running:
             try:
                 frame = self._frame_queue.get(timeout=1.0)

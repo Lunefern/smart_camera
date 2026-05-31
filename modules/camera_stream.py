@@ -20,7 +20,10 @@ import queue
 import time
 import threading
 
-import cv2
+try:
+    import cv2
+except ImportError:
+    cv2 = None
 
 
 class CameraStream:
@@ -198,6 +201,8 @@ class CameraStream:
         return None
 
     def _create_capture(self, source):
+        if cv2 is None:
+            return None
         # RTSP 流在 Windows 上更适合走 FFMPEG + TCP，能明显降低乱序包和丢包引发的解码错误。
         if isinstance(source, str) and source.lower().startswith("rtsp://"):
             os.environ.setdefault(
