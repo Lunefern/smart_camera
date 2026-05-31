@@ -191,6 +191,9 @@ class CameraStream:
         # 先开用户指定的源，再退回样例视频，最后尝试本机摄像头 0。
         for source in self._candidate_sources():
             cap = self._create_capture(source)
+            if cap is None:
+                print(f"[Camera] _create_capture 返回 None，跳过源: {source}")
+                continue
             if cap.isOpened():
                 self._active_source = source
                 self._source_is_file = isinstance(source, str) and Path(source).exists()
@@ -222,6 +225,7 @@ class CameraStream:
         normalized = self._normalize_source(self.stream_url)
         if normalized is not None:
             sources.append(normalized)
+
 
         # 最后再尝试摄像头编号 0~3，覆盖大多数常见的本地采集设备编号。
         # 这样即使用户没有手动指定，也能自动枚举更多本地视频源。

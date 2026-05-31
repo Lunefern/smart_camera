@@ -34,7 +34,7 @@ class YoloProcessor:
     ):
         self.socketio   = socketio
         self.store      = store
-        self.model_path = Path(model_path) if model_path else Path(__file__).resolve().parent.parent / "YOLOModel" / "yolo26n.pt"
+        self.model_path = Path(model_path) if model_path else Path(__file__).resolve().parent.parent / "YOLOModel" / "best.pt"
         self.task       = task
         self.conf_threshold = conf_threshold
         self.source_name = source_name
