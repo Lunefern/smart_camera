@@ -384,7 +384,8 @@ function renderSourceState(d) {
 
   const requested = d.requested_source ?? "--";
   const active = d.active_source ?? requested;
-  current.textContent = `请求源: ${requested} | 活动源: ${active ?? "--"}`;
+  const backend = d.active_backend ?? "--";
+  current.textContent = `请求源: ${requested} | 活动源: ${active ?? "--"} | 后端: ${backend}`;
   status.textContent = d.is_running ? "运行中" : "已停止";
   status.className = "source-badge " + (d.is_running ? "on" : "off");
 
