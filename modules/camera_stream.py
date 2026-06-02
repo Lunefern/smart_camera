@@ -42,6 +42,7 @@ class CameraStream:
         # `_latest` 用于 WebSocket 的单帧快照接口，前端手动刷新时会用到。
         self._latest    = None
         self._active_source = None
+        self._active_backend = None
         self._source_is_file = False
         self._is_rtsp_source = False
         self._reconnect_delay = 1.0
@@ -81,6 +82,7 @@ class CameraStream:
         self.stream_url = stream_url
         self._latest = None
         self._active_source = None
+        self._active_backend = None
         self._source_is_file = False
         self._is_rtsp_source = False
         self._reconnect_delay = 1.0
@@ -100,6 +102,7 @@ class CameraStream:
         return {
             "requested_source": self.stream_url,
             "active_source": self._active_source,
+            "active_backend": self._active_backend,
             "is_running": self._running,
             "is_rtsp": self._is_rtsp_source,
             "is_file": self._source_is_file,
@@ -198,6 +201,12 @@ class CameraStream:
                 self._active_source = source
                 self._source_is_file = isinstance(source, str) and Path(source).exists()
                 self._is_rtsp_source = isinstance(source, str) and source.lower().startswith("rtsp://")
+                if isinstance(source, int):
+                    self._active_backend = self._active_backend or "auto"
+                elif self._is_rtsp_source:
+                    self._active_backend = "ffmpeg"
+                else:
+                    self._active_backend = "default"
                 print(f"[Camera] 打开视频源: {source}")
                 return cap
             cap.release()
@@ -216,8 +225,30 @@ class CameraStream:
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             return cap
 
+        # 本地摄像头在 Windows 上通常更适合先试 DirectShow，再试 Media Foundation。
+        # 某些机器默认后端会把 0~3 的设备号全部判定为不可用，所以这里主动多试几个后端。
+        if isinstance(source, int):
+            backend_candidates = []
+            for attr in ("CAP_DSHOW", "CAP_MSMF", "CAP_ANY"):
+                backend = getattr(cv2, attr, None)
+                if backend is not None:
+                    backend_candidates.append((attr, backend))
+
+            for backend_name, backend in backend_candidates:
+                cap = cv2.VideoCapture(source, backend)
+                if cap.isOpened():
+                    self._active_backend = backend_name
+                    return cap
+                cap.release()
+            return None
+
         # 其他类型源保持默认后端即可。
-        return cv2.VideoCapture(source)
+        cap = cv2.VideoCapture(source)
+        if cap.isOpened():
+            self._active_backend = "default"
+            return cap
+        cap.release()
+        return None
 
     def _candidate_sources(self):
         sources = []
