@@ -1,18 +1,18 @@
 # Smart Camera
 
-当前版本默认会先用本地摄像头 `0` 做 YOLO 识别，前端直接显示带框画面；RTSP 仍然保留在切换菜单里，后续可以切过去接其他流，并结合 `AviToFrame` 里的快速抽帧思路做关键帧处理。
-当前 YOLO 识别默认使用仓库内置的 [`YOLOModel/best.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/best.pt)。
+基于 Flask + Socket.IO ，前端可以实时查看 YOLO 识别画面、视频源状态、关键帧处理结果和传感器数据。
+
+当前默认使用仓库内置的 [`YOLOModel/best.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/best.pt) 做识别，默认输入源是本地摄像头 `0`。接 RTSP、文件流或其它摄像头编号，可以直接在页面里切换。
 
 ## 功能
 
-- Web 页面展示实时画面
 - Web 页面展示 YOLO 识别后的带框画面
-- 基于相邻帧变化程度的关键帧抽取
+- 支持本地摄像头、RTSP 和本地视频文件切换
+- 关键帧抽取与本地保存
+- 关键帧自动清理和手动清理
 - 传感器数据面板与趋势图
 - WebSocket 实时推送
-- 支持将关键帧保存到本地目录
-- 支持切换到本地摄像头、RTSP 或其他视频文件
-- 支持后续扩展分类、分割等 YOLO 任务
+- 预留 YOLO 分类、分割等后续扩展入口
 
 ## 项目结构
 
@@ -38,6 +38,7 @@ smart_camera/
 ## 环境要求
 
 - Python 3.9+
+- Windows 下建议直接使用本地摄像头编号 `0~3` 或 RTSP 方式接入
 
 ## 安装依赖
 
@@ -45,8 +46,13 @@ smart_camera/
 py -3 -m pip install -r requirements.txt
 ```
 
-当前默认配置会直接加载 YOLO 和 `ultralytics`，`eventlet` 仍然不是必需项。
-当前环境组合固定为 `opencv-python==4.11.0.86` 和 `numpy<2`，这是这套 YOLO 推理链路在本机上已经验证过的稳定组合。
+当前已验证的依赖组合是：
+
+- `opencv-python==4.11.0.86`
+- `numpy<2`
+- `ultralytics`
+
+`eventlet` 不是必需项，当前项目使用的是 `threading` 模式。
 
 ## 本地运行
 
@@ -66,16 +72,17 @@ http://127.0.0.1:5000
 
 - 自动优先读取本地摄像头 `0`
 - 自动启动视频采集
+- 自动启动 YOLO 推理
 - 自动启动关键帧处理
 - 页面会直接显示 YOLO 识别后的带框画面
-- 页面顶部会显示当前视频源状态，并提供预留的切换菜单
+- 页面顶部会显示当前视频源和 YOLO 状态
 - 页面支持调整关键帧本地保留数量，并可手动触发清理
 
 ## 视频源配置
 
-默认视频源由环境变量 `SMART_CAMERA_SOURCE` 控制。
+默认视频源由环境变量 `SMART_CAMERA_SOURCE` 控制，也可以在页面里切换。
 
-可以把它设置成以下任意一种：
+可用输入包括：
 
 - 本地摄像头编号，例如 `0`
 - RTSP 地址，例如 `rtsp://localhost:8554/webcam`
@@ -89,6 +96,12 @@ $env:SMART_CAMERA_SOURCE="0"
 py -3 app.py
 ```
 
+页面上的视频源面板支持：
+
+- 查看当前请求源、活动源和打开后端
+- 预留 `0~3` 本地摄像头切换
+- 输入自定义 RTSP 或本地文件路径
+
 ## RTSP 推流示例
 
 先启动本地 MediaMTX，再用 `ffmpeg` 把摄像头推到默认地址：
@@ -97,22 +110,38 @@ py -3 app.py
 ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -g 30 -bf 0 -f rtsp rtsp://localhost:8554/webcam
 ```
 
-如果你使用的是其他输入设备，把 `video="icspring camera"` 改成你的实际设备名即可。
+把 `video="icspring camera"` 改成实际设备。如果仍然看到 H.264 解码报错，优先检查推流端是否稳定输出了关键帧，以及 MediaMTX 是否收到了完整的 TCP 连接。
 
-如果仍然看到 H.264 解码报错，优先检查推流端是否稳定输出了关键帧，以及 MediaMTX 是否收到了完整的 TCP 连接。
+## YOLO 说明
+
+当前 YOLO 识别流程是：
+
+1. 摄像头采集线程持续输出最新帧
+2. `YoloProcessor` 从队列中读取帧
+3. 使用 `YOLOModel/best.pt` 做推理
+4. 前端展示带框结果图和检测列表
+
+页面里会显示：
+
+- YOLO 当前状态
+- 模型路径
+- 输入源
+- 当前任务类型
+
+如果模型加载失败，页面会显示状态提示，前端仍然会回退显示原始画面，方便排查摄像头链路。
 
 ## 关键帧清理
 
-默认情况下，关键帧会保存在 `AviToFrame/frames_local/`，并且只保留最新的一定数量。
+关键帧默认保存在 `AviToFrame/frames_local/`，并且只保留最新的一定数量。
 
 - 默认保留数量：`200`
 - 可通过页面上的“关键帧本地存储”面板调整
 - 也可以通过环境变量 `FRAME_STORAGE_LIMIT` 在启动时修改默认保留值
-- 如果你想立即清理旧图，可以直接在页面里点“立即清理”
+- 可以在页面里直接点“立即清理”
 
 ## 关键帧处理
 
-项目已经把 `AviToFrame` 里的快速抽帧思路接入到主程序中，核心逻辑是：
+项目把 `AviToFrame` 里的快速抽帧思路接入到了主程序中，核心逻辑是：
 
 1. 先把帧缩小到较低分辨率
 2. 再转成灰度图
@@ -137,25 +166,34 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 - `GET /api/sensor/latest`
 - `GET /api/sensor/history?n=50`
 
+### 摄像头控制
+
+- `GET /api/camera/source`
+- `POST /api/camera/source`
+- `POST /api/camera/start`
+- `POST /api/camera/stop`
+
+### 关键帧存储
+
+- `GET /api/frame/storage`
+- `POST /api/frame/storage`
+- `POST /api/frame/cleanup`
+
 ### 检测记录
 
 - `GET /api/detections?n=20`
 
-### 摄像头控制
-
-- `POST /api/camera/start`
-- `POST /api/camera/stop`
-
 ## WebSocket 事件
 
 - `sensor_update`：推送传感器数据
+- `camera_source_update`：推送视频源状态
+- `yolo_status_update`：推送 YOLO 状态
+- `frame_storage_update`：推送关键帧存储状态
 - `frame_update`：推送关键帧处理结果
 - `frame`：推送单帧快照
-- `detection_result`：YOLO 检测结果
+- `detection_result`：推送 YOLO 检测结果
 
-## 传感器输入格式
-
-如果接入单片机数据，默认监听：
+## 传感器输入格式(未完成)
 
 - `0.0.0.0:9000`
 
@@ -165,39 +203,38 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 {"temp": 25.3, "humi": 60.1, "status": "ok", "device_id": "mcu-01"}
 ```
 
-## 可选的 YOLO
-
-仓库里保留了 `modules/yolo_processor.py`，如果你后续想重新启用 YOLO 检测，可以再安装：
-
-```bash
-py -3 -m pip install ultralytics
-```
-
-然后把 `app.py` 里的视频处理链路切回 YOLO 逻辑即可。
-
 ## 常见问题
 
 ### 1. 打开页面后没有画面
 
-- 检查 `AviToFrame/tmp.avi` 是否存在
+- 检查摄像头是否被其它程序占用
 - 如果想连真摄像头，设置 `SMART_CAMERA_SOURCE=0`
 - 如果是 RTSP，确认地址可以被 OpenCV 打开
+- 查看页面上的 YOLO 状态和视频源状态
 
-### 2. 端口被占用
+### 2. 切换摄像头失败
 
-默认 Web 服务端口是 `5000`，传感器监听端口是 `9000`。
+- Windows 下默认后端有时不稳定，项目已经自动尝试 `DirectShow` 和 `Media Foundation`
+- 如果 `0~3` 都打不开，先确认设备驱动是否正常
+- 也可以先切到 RTSP 或本地文件验证采集链路
 
-如果占用冲突，可以修改 `app.py` 和 `modules/sensor_server.py` 里的端口配置。
+### 3. 端口被占用
 
-### 3. 画面不更新
+- Web 服务默认端口：`5000`
+- 传感器监听端口：`9000`
 
-- 确认页面已经启动
-- 确认视频源是可读的
-- 可以点击“刷新帧”按钮手动请求最新画面
+如果冲突，可以修改 `app.py` 和 `modules/sensor_server.py` 里的端口配置。
 
-## 后续处理
+### 4. YOLO 没有结果
 
-- 把前端静态资源从 CDN 改为本地依赖
-- 把关键帧保存记录做成页面可查看列表
-- 给视频源配置做成页面可选项
-- 增加命令行参数，方便切换输入文件和阈值
+- 确认 [`YOLOModel/best.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/best.pt) 存在
+- 确认当前环境已经安装 `ultralytics`
+- 确认 `numpy` 和 `opencv-python` 版本是 README 里写的兼容组合
+
+## TODO
+
+- 把前端 CDN 依赖改成本地静态资源
+- 增加检测结果统计卡片
+- 增加模型切换菜单
+- 把关键帧列表做成可视化历史页面
+- 增加命令行参数，方便切换输入源和阈值
