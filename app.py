@@ -32,8 +32,8 @@ BASE_DIR = Path(__file__).resolve().parent
 # 默认 RTSP 流。建议先启动本地 MediaMTX，然后再通过 ffmpeg 或摄像头推流到这个地址。
 DEFAULT_RTSP_STREAM = "rtsp://localhost:8554/webcam"
 
-# YOLO 模型默认路径，优先使用仓库内置的官方预训练权重。
-YOLO_MODEL_PATH = BASE_DIR / "YOLOModel" / "yolo26n.pt"
+# YOLO 模型默认路径，优先使用仓库内置的 `best.pt` 权重。
+YOLO_MODEL_PATH = BASE_DIR / "YOLOModel" / "best.pt"
 
 # 默认保留的关键帧数量。超过这个数量时会自动删除最旧的图片。
 FRAME_STORAGE_LIMIT = int(os.getenv("FRAME_STORAGE_LIMIT", "200"))

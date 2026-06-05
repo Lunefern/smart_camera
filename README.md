@@ -1,7 +1,7 @@
 # Smart Camera
 
 当前版本默认会先用本地摄像头 `0` 做 YOLO 识别，前端直接显示带框画面；RTSP 仍然保留在切换菜单里，后续可以切过去接其他流，并结合 `AviToFrame` 里的快速抽帧思路做关键帧处理。
-当前 YOLO 识别默认使用仓库内置的 [`YOLOModel/yolo26n.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/yolo26n.pt)。
+当前 YOLO 识别默认使用仓库内置的 [`YOLOModel/best.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/best.pt)。
 
 ## 功能
 
