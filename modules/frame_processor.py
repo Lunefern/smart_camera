@@ -39,7 +39,7 @@ class FastFrameProcessor:
         compare_height: int = 180,
         diff_threshold: float = 4.0,
         jpeg_quality: int = 80,
-        max_saved_images: int = 200,
+        max_saved_images: int = 50,
     ):
         self.socketio = socketio
         self.store = store
