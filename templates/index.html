@@ -69,6 +69,7 @@
     .metric { background: #f9fafb; border-radius: 8px; padding: 14px; text-align: center; }
     .metric .value { font-size: 36px; font-weight: 700; line-height: 1; }
     .metric .label { font-size: 12px; color: #6b7280; margin-top: 4px; }
+    .metric.distance .value { color: #f59e0b; }
     .metric.temp .value { color: #ef4444; }
     .metric.humi .value { color: #3b82f6; }
 
@@ -189,20 +190,24 @@
     <div class="card">
       <div class="card-title">传感器数据</div>
       <div class="metrics">
-        <div class="metric temp">
-          <div class="value" id="temp-val">--</div>
-          <div class="label">温度 °C</div>
+        <div class="metric distance">
+          <div class="value" id="distance-val">--</div>
+          <div class="label">距离 mm</div>
         </div>
         <div class="metric humi">
-          <div class="value" id="humi-val">--</div>
+          <div class="value" id="humidity-val">--</div>
           <div class="label">湿度 %</div>
+        </div>
+        <div class="metric">
+          <div class="value" id="temperature-val">--</div>
+          <div class="label">温度 °C</div>
         </div>
       </div>
       <div style="margin-top:12px;font-size:12px;color:#9ca3af" id="sensor-time">--</div>
     </div>
 
     <div class="card">
-      <div class="card-title">温湿度趋势</div>
+      <div class="card-title">距离 / 湿度 / 温度趋势</div>
       <div class="chart-wrap">
         <canvas id="trend-chart"></canvas>
       </div>
@@ -212,7 +217,7 @@
       <div class="card-title">设备状态</div>
       <div id="device-list">
         <div class="device-row">
-          <span>MCU-01</span>
+          <span>UDP 传感器</span>
           <span class="badge offline" id="mcu-badge">离线</span>
         </div>
         <div class="device-row">
@@ -258,7 +263,7 @@ socket.on("yolo_status_update", (d) => {
 // ── 传感器数据处理 ─────────────────────────────────────────
 // 这里用 Chart.js 维护一个轻量趋势图，适合实时追加而不是重绘整个历史数据集。
 const MAX_POINTS = 30;
-const tempData = [], humiData = [], labels = [];
+const distanceData = [], humidityData = [], temperatureData = [], labels = [];
 
 const ctx = document.getElementById("trend-chart").getContext("2d");
 const chart = new Chart(ctx, {
@@ -266,8 +271,9 @@ const chart = new Chart(ctx, {
   data: {
     labels,
     datasets: [
-      { label: "温度°C", data: tempData, borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,.08)", tension: 0.4, pointRadius: 2 },
-      { label: "湿度%",  data: humiData, borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,.08)", tension: 0.4, pointRadius: 2 }
+      { label: "距离mm", data: distanceData, borderColor: "#f59e0b", backgroundColor: "rgba(245,158,11,.08)", tension: 0.4, pointRadius: 2 },
+      { label: "湿度%",  data: humidityData, borderColor: "#3b82f6", backgroundColor: "rgba(59,130,246,.08)", tension: 0.4, pointRadius: 2 },
+      { label: "温度°C", data: temperatureData, borderColor: "#ef4444", backgroundColor: "rgba(239,68,68,.08)", tension: 0.4, pointRadius: 2 }
     ]
   },
   options: {
@@ -278,17 +284,18 @@ const chart = new Chart(ctx, {
 });
 
 socket.on("sensor_update", (d) => {
-  if (d.temp === undefined || d.humi === undefined) {
+  if (d.distance === undefined || d.humidity === undefined || d.temperature === undefined) {
     return;
   }
-  document.getElementById("temp-val").textContent = d.temp.toFixed(1);
-  document.getElementById("humi-val").textContent = d.humi.toFixed(1);
+  document.getElementById("distance-val").textContent = d.distance.toFixed(1);
+  document.getElementById("humidity-val").textContent = d.humidity.toFixed(1);
+  document.getElementById("temperature-val").textContent = d.temperature.toFixed(1);
   document.getElementById("sensor-time").textContent = "更新: " + new Date(d.timestamp).toLocaleTimeString();
 
   // 只追加当前点，不重新拉取全量历史，这样性能更稳，也更接近实时仪表盘的使用方式。
   const t = new Date(d.timestamp).toLocaleTimeString("zh", {hour:"2-digit",minute:"2-digit",second:"2-digit"});
-  labels.push(t); tempData.push(d.temp); humiData.push(d.humi);
-  if (labels.length > MAX_POINTS) { labels.shift(); tempData.shift(); humiData.shift(); }
+  labels.push(t); distanceData.push(d.distance); humidityData.push(d.humidity); temperatureData.push(d.temperature);
+  if (labels.length > MAX_POINTS) { labels.shift(); distanceData.shift(); humidityData.shift(); temperatureData.shift(); }
   chart.update("none");
 
   // 收到传感器数据，就认为 MCU 已在线。
@@ -296,7 +303,7 @@ socket.on("sensor_update", (d) => {
   b.textContent = "在线"; b.className = "badge ok";
 
   // 一个非常基础的告警规则示例：温度超过阈值就往日志里打一条。
-  if (d.temp > 35) addAlert(`温度过高: ${d.temp}°C`, "warn");
+  if (d.temperature > 35) addAlert(`温度过高: ${d.temperature}°C`, "warn");
 });
 
 // ── 检测结果处理 ───────────────────────────────────────────
@@ -537,7 +544,7 @@ function addAlert(msg, level = "info") {
 
 // 页面首次打开时先拉一次最新传感器状态，减少“全是空白”的等待感。
 fetch("/api/sensor/latest").then(r => r.json()).then(d => {
-  if (d.temp !== undefined) socket.emit("sensor_update", d);
+  if (d.distance !== undefined) socket.emit("sensor_update", d);
 });
 
 fetch("/api/camera/source")

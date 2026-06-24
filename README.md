@@ -134,7 +134,7 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 
 关键帧默认保存在 `AviToFrame/frames_local/`，并且只保留最新的一定数量。
 
-- 默认保留数量：`200`
+- 默认保留数量：`50`
 - 可通过页面上的“关键帧本地存储”面板调整
 - 也可以通过环境变量 `FRAME_STORAGE_LIMIT` 在启动时修改默认保留值
 - 可以在页面里直接点“立即清理”
@@ -193,15 +193,23 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 - `frame`：推送单帧快照
 - `detection_result`：推送 YOLO 检测结果
 
-## 传感器输入格式(未完成)
+## 传感器输入格式
 
-- `0.0.0.0:9000`
+- `0.0.0.0:333`
 
-数据格式为每行一条 JSON，例如：
+传感器通过 UDP 发送 JSON，后端只接收这三个字段：
 
 ```json
-{"temp": 25.3, "humi": 60.1, "status": "ok", "device_id": "mcu-01"}
+{"distance": 12.4, "humidity": 60.1, "temperature": 25.3}
 ```
+
+说明：
+
+- `distance`：距离，单位 `mm`
+- `humidity`：湿度
+- `temperature`：温度
+
+其它字段会被忽略。
 
 ## 常见问题
 
@@ -221,7 +229,7 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 ### 3. 端口被占用
 
 - Web 服务默认端口：`5000`
-- 传感器监听端口：`9000`
+- 传感器监听端口：`333`
 
 如果冲突，可以修改 `app.py` 和 `modules/sensor_server.py` 里的端口配置。
 

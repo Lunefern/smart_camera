@@ -76,10 +76,18 @@ class DataStore:
         con.execute("""
             CREATE TABLE IF NOT EXISTS sensor_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                temp REAL, humi REAL, status TEXT,
-                device_id TEXT, timestamp TEXT
+                distance REAL,
+                humidity REAL,
+                temperature REAL,
+                timestamp TEXT
             )
         """)
+        self._ensure_sensor_columns(con, {
+            "distance": "REAL",
+            "humidity": "REAL",
+            "temperature": "REAL",
+            "timestamp": "TEXT",
+        })
         con.execute("""
             CREATE TABLE IF NOT EXISTS detection_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,6 +96,15 @@ class DataStore:
         """)
         con.commit()
         con.close()
+
+    @staticmethod
+    def _ensure_sensor_columns(con: sqlite3.Connection, columns: dict[str, str]):
+        existing = {
+            row[1] for row in con.execute("PRAGMA table_info(sensor_log)").fetchall()
+        }
+        for column_name, column_type in columns.items():
+            if column_name not in existing:
+                con.execute(f"ALTER TABLE sensor_log ADD COLUMN {column_name} {column_type}")
 
     def _db_insert(self, table: str, data: dict):
         """异步写入，避免阻塞推理/采集线程。

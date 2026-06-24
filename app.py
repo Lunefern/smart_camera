@@ -36,7 +36,7 @@ DEFAULT_RTSP_STREAM = "rtsp://localhost:8554/webcam"
 YOLO_MODEL_PATH = BASE_DIR / "YOLOModel" / "best.pt"
 
 # 默认保留的关键帧数量。超过这个数量时会自动删除最旧的图片。
-FRAME_STORAGE_LIMIT = int(os.getenv("FRAME_STORAGE_LIMIT", "200"))
+FRAME_STORAGE_LIMIT = int(os.getenv("FRAME_STORAGE_LIMIT", "50"))
 
 # 视频源优先级：
 # 1) 环境变量 SMART_CAMERA_SOURCE
@@ -91,7 +91,7 @@ socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
 # 后台采集、传感器监听和帧处理都依赖长期运行的线程，
 # 如果每个请求都重新构建对象，会导致重复启动线程和资源泄漏。
 store    = DataStore()
-sensor   = SensorServer(socketio, store, host="0.0.0.0", port=9000)
+sensor   = SensorServer(socketio, store, host="0.0.0.0", port=333)
 camera   = CameraStream(socketio, stream_url=DEFAULT_STREAM_SOURCE)
 frame_queue = queue.Queue(maxsize=2)
 camera.register_consumer_queue(frame_queue)
