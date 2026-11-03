@@ -106,13 +106,26 @@ class FastFrameProcessor:
         self.max_saved_images = max(1, int(max_saved_images))
 
     def get_storage_status(self) -> dict:
-        """返回前端展示和调试用的存储状态。"""
+        """返回前端展示和调试用的存储状态。
+
+        注意：自动清理线程可能在我们列完目录之后就把文件删掉了，
+        所以逐个文件取大小必须容错。否则这里会抛 FileNotFoundError，
+        而它常常发生在 WebSocket 的 connect 回调里，会让整个客户端连不上。
+        """
         files = self._list_saved_files()
-        total_size = sum(p.stat().st_size for p in files)
+        total_size = 0
+        alive_count = 0
+        for path in files:
+            try:
+                total_size += path.stat().st_size
+                alive_count += 1
+            except OSError:
+                # 文件刚被清理 / 权限变化，跳过即可，不影响其他统计。
+                continue
         return {
             "output_dir": str(self.output_dir) if self.output_dir else None,
             "max_saved_images": self.max_saved_images,
-            "saved_file_count": len(files),
+            "saved_file_count": alive_count,
             "total_size_bytes": total_size,
             "total_size_mb": round(total_size / (1024 * 1024), 3),
         }
@@ -218,7 +231,11 @@ class FastFrameProcessor:
             match = re.search(r"frame_(\d+)\.jpg$", path.name)
             if match:
                 return int(match.group(1))
-            return path.stat().st_mtime
+            try:
+                # 文件可能在列目录后立刻被清理，取不到时间就排到最前面。
+                return path.stat().st_mtime
+            except OSError:
+                return 0
 
         files.sort(key=sort_key)
         return files

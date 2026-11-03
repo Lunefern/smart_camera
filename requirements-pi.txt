@@ -1,0 +1,25 @@
+# 树莓派（Raspberry Pi 4B / 2GB，64 位系统）用的依赖清单
+#
+# 与 requirements.txt 的区别：**不安装 ultralytics / torch**。
+#   部分 aarch64 版 torch 轮子使用了 Cortex-A72 不支持的 ARMv8.2 指令（dotprod/fp16），
+#   推理时会直接 SIGILL，表现为进程突然打印 `Illegal instruction` 后退出。
+#   这里改用 OpenCV 自带的 DNN 模块加载 YOLOModel/best.onnx 做推理，不需要 torch。
+#
+# 安装（推荐先建虚拟环境）：
+#   python -m venv .venv && source .venv/bin/activate
+#   pip install -r requirements-pi.txt
+#
+# 如果 pip 安装 opencv / numpy 在树莓派上编译失败或速度太慢，改用系统包更省事：
+#   sudo apt install -y python3-opencv python3-numpy
+#   然后在虚拟环境里加 --system-site-packages 重新创建，或直接用系统 python 运行。
+
+flask
+flask-socketio
+flask-cors
+requests
+
+# 推理只需要 OpenCV（DNN + ONNX）和 numpy
+numpy
+opencv-python
+
+# 说明：不需要 onnxruntime，OpenCV 已经内置 ONNX 推理能力。

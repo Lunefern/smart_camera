@@ -19,7 +19,9 @@
 ```text
 smart_camera/
 ├─ app.py
-├─ requirements.txt
+├─ diagnose_env.py          # 运行环境自检（定位 Illegal instruction 之类崩溃）
+├─ requirements.txt         # PC：含 ultralytics + torch
+├─ requirements-pi.txt      # 树莓派：不含 torch，走 OpenCV DNN
 ├─ README.md
 ├─ modules/
 │  ├─ camera_stream.py
@@ -29,6 +31,10 @@ smart_camera/
 │  └─ yolo_processor.py
 ├─ templates/
 │  └─ index.html
+├─ YOLOModel/
+│  ├─ best.pt               # torch 后端权重
+│  ├─ best.onnx             # OpenCV DNN 后端权重
+│  └─ classes.json          # 类别名
 └─ AviToFrame/
    ├─ tmp.avi
    ├─ main.py
@@ -37,29 +43,44 @@ smart_camera/
 
 ## 环境要求
 
-- Python 3.9+
+- Python 3.9+（当前已在 Windows + Python 3.14、树莓派 4B + Python 3.13 上验证）
 - Windows 下建议直接使用本地摄像头编号 `0~3` 或 RTSP 方式接入
+- 没有独立显卡也能跑，`torch` 会自动使用 CPU 推理；树莓派等 ARM 设备用 `dnn` 后端
+- 树莓派部署见下面的「树莓派 4B（2GB）部署」一节
 
 ## 安装依赖
 
+在项目根目录执行：
+
 ```bash
-py -3 -m pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-当前已验证的依赖组合是：
+当前验证通过的依赖组合（Windows + Python 3.14 64 位，CPU 推理）：
 
-- `opencv-python==4.11.0.86`
-- `numpy<2`
-- `ultralytics`
+- `flask 3.1.3`
+- `flask-socketio 5.7.0` + `flask-cors 6.0.5`
+- `numpy 2.5.4`
+- `opencv-python 4.14.0.94`
+- `ultralytics 8.4.193`
+- `torch 2.15.0+cpu` + `torchvision 0.29.2`
 
-`eventlet` 不是必需项，当前项目使用的是 `threading` 模式。
+关于版本选择：
+
+- 不要再把 `numpy` 固定成 `numpy<2`。`numpy 1.x` 没有 Python 3.13+ 的预编译轮子，
+  在 Python 3.14 上会退化成源码编译并直接失败；同时 `torch` / `ultralytics` 现在都已支持 `numpy 2.x`。
+- `opencv-python` 需要 `>=4.12`，更早的版本不提供对应新解释器的轮子。
+- `numpy` 和 `torch` 必须安装互相兼容的版本，否则推理时会报
+  `RuntimeError: Numpy is not available`。如果遇到这个报错，先卸载两者再按
+  `requirements.txt` 重装，而不是只降级 `numpy`。
+- `eventlet` 不是必需项，当前项目使用的是 `threading` 模式。
 
 ## 本地运行
 
-直接启动：
+确认依赖装好之后，在项目根目录启动：
 
 ```bash
-py -3 app.py
+python app.py
 ```
 
 启动后访问：
@@ -93,7 +114,7 @@ http://127.0.0.1:5000
 
 ```powershell
 $env:SMART_CAMERA_SOURCE="0"
-py -3 app.py
+python app.py
 ```
 
 页面上的视频源面板支持：
@@ -118,8 +139,27 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 
 1. 摄像头采集线程持续输出最新帧
 2. `YoloProcessor` 从队列中读取帧
-3. 使用 `YOLOModel/best.pt` 做推理
+3. 按所选后端推理（`best.pt` 走 torch，`best.onnx` 走 OpenCV DNN）
 4. 前端展示带框结果图和检测列表
+
+### 两种推理后端
+
+| 后端 | 依赖 | 适用场景 |
+| --- | --- | --- |
+| `torch` | `ultralytics` + `torch` | PC / 有正常 torch 轮子的平台，精度和功能最全 |
+| `dnn` | 只要 `opencv-python` | 树莓派等 ARM 设备，不需要 torch，内存占用小 |
+| `off` | 无 | 只做采集 / 关键帧 / 网页，不跑识别 |
+
+后端由环境变量 `SMART_CAMERA_YOLO_BACKEND` 控制，默认 `auto`：
+ARM 设备（`aarch64`）自动选 `dnn`，其余平台自动选 `torch`。
+
+```bash
+SMART_CAMERA_YOLO_BACKEND=dnn python app.py   # 强制用 OpenCV DNN
+SMART_CAMERA_YOLO_BACKEND=off python app.py   # 完全不跑识别
+```
+
+`YOLOModel/best.onnx` 是 `best.pt` 的等价格权重（`imgsz=640`），类别名放在
+`YOLOModel/classes.json`。两份权重保持一致，切换后端时检测结果基本一致。
 
 页面里会显示：
 
@@ -129,6 +169,89 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 - 当前任务类型
 
 如果模型加载失败，页面会显示状态提示，前端仍然会回退显示原始画面，方便排查摄像头链路。
+
+## 树莓派 4B（2GB）部署
+
+### 1. 系统要求
+
+- 必须是 **64 位系统**：`uname -m` 输出 `aarch64`
+  （32 位 `armv7l` 上很多轮子不完整，YOLO 相关依赖基本装不上）
+- 建议开启 swap 或 zram，避免 2GB 内存被推理峰值打满：
+  `sudo apt install -y zram-tools`（或扩大 `/etc/dphys-swapfile` 里的 `CONF_SWAPSIZE`）
+
+### 2. 安装依赖（不装 torch）
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-pi.txt
+```
+
+如果 pip 编译 OpenCV 太慢或失败，直接用系统包更省事：
+
+```bash
+sudo apt install -y python3-opencv python3-numpy
+```
+
+### 3. 启动
+
+树莓派上直接 `python app.py` 就行，两个默认行为已经适配好：
+
+- `SMART_CAMERA_YOLO_BACKEND=auto` 在 `aarch64` 上自动选 `dnn`，不会碰 torch
+- 传感器端口 `333` 需要特权时自动回退到 `1333`，并在日志里提示
+
+```bash
+python app.py
+```
+
+后台常驻：
+
+```bash
+setsid nohup python app.py > run.log 2>&1 < /dev/null &
+```
+
+2GB 机型如果想再省 CPU，可以把推理改成隔帧（`imgsz` 保持 640，因为 ONNX 是固定输入）：
+
+```bash
+SMART_CAMERA_YOLO_INTERVAL=2 python app.py
+```
+
+### 4. 传感器端口权限
+
+`333` 是 1024 以下的特权端口，普通用户绑定会被拒绝。现在的行为是**自动回退到 1333**，
+所以你只需要把单片机推送的目标端口改成 `1333` 即可。其它几种做法：
+
+1. 想让程序继续监听 `333`：只给 Python 授权绑定低位端口（不用整体提权）：
+   ```bash
+   sudo setcap 'cap_net_bind_service=+ep' $(readlink -f $(which python))
+   ```
+2. 换一个自定义端口：`SENSOR_PORT=2333 SENSOR_PORT_FALLBACK=2333 python app.py`
+3. `sudo python app.py`（不推荐，整个程序都变成 root）
+
+绑定失败时传感器线程只会打印提示并退出，摄像头 / YOLO / 网页不受影响。
+
+### 5. 出现 `Illegal instruction`
+
+这是 C 扩展（numpy / OpenCV / torch）用到了当前 CPU 不支持的指令，Python 捕获不到。
+先跑自检定位是哪一个库：
+
+```bash
+python diagnose_env.py
+```
+
+常见结论：
+
+- 只有 `torch` 相关检查崩溃 → 用 `SMART_CAMERA_YOLO_BACKEND=dnn`，或直接
+  `pip uninstall -y ultralytics torch torchvision`
+- numpy / OpenCV 也崩溃 → 改用系统包：`sudo apt install -y python3-opencv python3-numpy`
+- 全部正常但仍有问题 → 看 `/api/system/status` 接口返回的模块状态
+
+### 6. 运行状态自查
+
+```bash
+curl -s http://127.0.0.1:5000/api/system/status | python -m json.tool
+```
+
+会返回 Python 版本、CPU 架构、YOLO 后端、传感器绑定状态和摄像头状态。
 
 ## 关键帧清理
 
@@ -151,9 +274,38 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 默认参数：
 
 - 比较分辨率：`320 x 180`
-- 差异阈值：`4.0`
+- 差异阈值：`4.0`（可用 `SMART_CAMERA_DIFF_THRESHOLD` 覆盖）
 - JPEG 质量：`80`
 - 保存目录：`AviToFrame/frames_local/`
+
+注意：摄像头刚启动的几秒内自动曝光/白平衡还在收敛，画面变化很大，会一次性写较多关键帧
+（实测树莓派 4B 上启动瞬间 10 秒内可达 60+ 张，稳态只有约 3 张）。如果设备噪声大、
+光线抖得厉害，可以把 `SMART_CAMERA_DIFF_THRESHOLD` 调到 `8~12` 以减少写盘。
+
+## 环境变量一览
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SMART_CAMERA_SOURCE` | `0` | 视频源：摄像头编号、RTSP 地址或本地视频文件 |
+| `SMART_CAMERA_PORT` | `5000` | Web 服务端口 |
+| `SMART_CAMERA_DEBUG` | `1` | 是否开启 Flask debug（`0` 关闭） |
+| `SMART_CAMERA_YOLO_BACKEND` | `auto` | `auto` / `torch` / `dnn` / `off`；ARM 设备自动选 `dnn` |
+| `SMART_CAMERA_YOLO_IMGSZ` | `640` | 推理分辨率；DNN 后端会按 ONNX 固定输入自动纠正 |
+| `SMART_CAMERA_YOLO_INTERVAL` | `1` | 每 N 帧推理一次，低算力设备可设 `2~3` |
+| `SENSOR_PORT` | `333` | 传感器 UDP 监听端口 |
+| `SENSOR_PORT_FALLBACK` | `1333` | Linux 上 `SENSOR_PORT` 需要特权时自动回退到的端口 |
+| `FRAME_STORAGE_LIMIT` | `50` | 关键帧本地保留数量 |
+| `SMART_CAMERA_DIFF_THRESHOLD` | `4.0` | 关键帧判定阈值，越大越省盘 |
+
+## 后台运行
+
+`nohup`、`setsid`、systemd 这类方式启动时 stdin 不是终端，flask-socketio 默认会拒绝
+用 Werkzeug 开发服务器运行。本项目已在 `app.py` 里传了 `allow_unsafe_werkzeug=True`，
+所以可以直接后台跑：
+
+```bash
+setsid nohup python app.py > run.log 2>&1 < /dev/null &
+```
 
 ## 后端接口
 
@@ -183,6 +335,10 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 
 - `GET /api/detections?n=20`
 
+### 运行状态
+
+- `GET /api/system/status`：Python 版本、CPU 架构、YOLO 后端、传感器绑定状态、摄像头状态
+
 ## WebSocket 事件
 
 - `sensor_update`：推送传感器数据
@@ -195,7 +351,8 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 
 ## 传感器输入格式
 
-- `0.0.0.0:333`
+- 默认地址：`0.0.0.0:333`
+- 端口可用环境变量 `SENSOR_PORT` 覆盖（Linux 上小于 1024 的端口需要特权，建议用 `1333`）
 
 传感器通过 UDP 发送 JSON，后端只接收这三个字段：
 
@@ -228,16 +385,29 @@ ffmpeg -f dshow -rtsp_transport tcp -i video="icspring camera" -vcodec libx264 -
 
 ### 3. 端口被占用
 
-- Web 服务默认端口：`5000`
-- 传感器监听端口：`333`
+- Web 服务默认端口：`5000`，可用 `SMART_CAMERA_PORT` 覆盖
+- 传感器监听端口：默认 `333`，可用 `SENSOR_PORT` 覆盖
 
-如果冲突，可以修改 `app.py` 和 `modules/sensor_server.py` 里的端口配置。
+Linux / 树莓派上 `333` 属于特权端口，普通用户会看到 `PermissionError`，改用
+`SENSOR_PORT=1333 python app.py` 即可（详见上面的树莓派部署一节）。
 
 ### 4. YOLO 没有结果
 
-- 确认 [`YOLOModel/best.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/best.pt) 存在
-- 确认当前环境已经安装 `ultralytics`
-- 确认 `numpy` 和 `opencv-python` 版本是 README 里写的兼容组合
+- 确认 `YOLOModel/best.pt`（torch 后端）或 `YOLOModel/best.onnx`（DNN 后端）存在
+- `torch` 后端确认已安装 `ultralytics`；`dnn` 后端只需要 `opencv-python`
+- 确认 `numpy` / `opencv-python` / `torch` 是 README 里写的兼容组合
+- 如果日志里出现 `RuntimeError: Numpy is not available`，说明 `numpy` 和 `torch` 的版本互相不匹配（常见于 numpy 2.x 配了只支持 numpy 1.x 的 torch），按 `requirements.txt` 重装这两个包即可
+- 如果进程直接退出、日志最后一行是 `Illegal instruction`，见上面的“树莓派部署 → 出现 Illegal instruction”
+
+### 5. 启动时报 `ModuleNotFoundError: No module named 'flask'`
+
+这是依赖没装到当前解释器里。先看启动时打印的“当前解释器”路径，然后执行：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+如果 PyCharm 里运行，检查 `Settings → Project → Python Interpreter` 是否指向同一个环境。
 
 ## TODO
 

@@ -13,12 +13,27 @@ RTSP 仍然保留在切换菜单里，后续可以一键切过去做扩展调试
 from __future__ import annotations
 
 import os
+import platform
 import queue
+import sys
 from pathlib import Path
 
-from flask import Flask, render_template, jsonify, request
-from flask_socketio import SocketIO, emit
-from flask_cors import CORS
+try:
+    from flask import Flask, render_template, jsonify, request
+    from flask_socketio import SocketIO, emit
+    from flask_cors import CORS
+except ModuleNotFoundError as exc:
+    # 依赖缺失是最常见的启动失败原因，直接抛出 ModuleNotFoundError 很难定位到底是
+    # “没装依赖”还是“装到了另一个解释器”。这里给出缺少的包名、当前解释器路径和修复命令。
+    raise SystemExit(
+        f"\n[启动失败] 缺少 Python 依赖: {exc.name}\n"
+        f"当前解释器: {sys.executable}\n"
+        f"Python 版本: {sys.version.split()[0]}\n"
+        "请在项目根目录执行下面的命令安装依赖:\n"
+        "    python -m pip install -r requirements.txt\n"
+        "如果依赖已经装过，请确认运行 app.py 的解释器和安装依赖的是同一个，"
+        "例如统一使用 `python app.py` 启动。\n"
+    )
 
 from modules.sensor_server import SensorServer
 from modules.camera_stream import CameraStream
@@ -34,9 +49,27 @@ DEFAULT_RTSP_STREAM = "rtsp://localhost:8554/webcam"
 
 # YOLO 模型默认路径，优先使用仓库内置的 `best.pt` 权重。
 YOLO_MODEL_PATH = BASE_DIR / "YOLOModel" / "best.pt"
+# 同目录下的 ONNX 权重，供 OpenCV DNN 后端使用（树莓派推荐）。
+YOLO_ONNX_PATH = BASE_DIR / "YOLOModel" / "best.onnx"
+
+# 推理后端：auto / torch / dnn / off
+# - auto：ARM 设备自动用 dnn（避免 arm 版 torch 触发 Illegal instruction）
+# - off ：完全不加载模型，只显示原始画面，适合算力很小的设备
+YOLO_BACKEND = os.getenv("SMART_CAMERA_YOLO_BACKEND", "auto")
+
+# 推理分辨率。树莓派 4B 建议 416 或 320，能明显降低 CPU 占用和延迟。
+YOLO_IMGSZ = int(os.getenv("SMART_CAMERA_YOLO_IMGSZ", "640"))
+
+# 每 N 帧推理一次。2GB 内存 / 低算力设备上可以设成 2~3，画面仍然够用。
+YOLO_INTERVAL = int(os.getenv("SMART_CAMERA_YOLO_INTERVAL", "1"))
 
 # 默认保留的关键帧数量。超过这个数量时会自动删除最旧的图片。
 FRAME_STORAGE_LIMIT = int(os.getenv("FRAME_STORAGE_LIMIT", "50"))
+
+# 关键帧判定阈值：相邻帧平均灰度差异超过该值才认为“画面有变化”并保存。
+# 光线抖动、传感器噪声大的设备（比如树莓派接的普通 USB 摄像头）可以调高，
+# 否则会每秒写十几张图，既费 CPU 又费 SD 卡寿命。
+FRAME_DIFF_THRESHOLD = float(os.getenv("SMART_CAMERA_DIFF_THRESHOLD", "4.0"))
 
 # 视频源优先级：
 # 1) 环境变量 SMART_CAMERA_SOURCE
@@ -91,7 +124,8 @@ socketio = SocketIO(app, async_mode="threading", cors_allowed_origins="*")
 # 后台采集、传感器监听和帧处理都依赖长期运行的线程，
 # 如果每个请求都重新构建对象，会导致重复启动线程和资源泄漏。
 store    = DataStore()
-sensor   = SensorServer(socketio, store, host="0.0.0.0", port=333)
+# 端口不写死：由 SENSOR_PORT 环境变量控制（Linux 上 <1024 的端口需要特权）。
+sensor   = SensorServer(socketio, store, host="0.0.0.0")
 camera   = CameraStream(socketio, stream_url=DEFAULT_STREAM_SOURCE)
 frame_queue = queue.Queue(maxsize=2)
 camera.register_consumer_queue(frame_queue)
@@ -102,6 +136,10 @@ yolo = YoloProcessor(
     socketio,
     store,
     model_path=str(YOLO_MODEL_PATH),
+    onnx_path=str(YOLO_ONNX_PATH),
+    imgsz=YOLO_IMGSZ,
+    inference_interval=YOLO_INTERVAL,
+    backend=YOLO_BACKEND,
     source_name="local_camera_0",
 )
 yolo.bind_queue(frame_queue)
@@ -110,6 +148,7 @@ frame_processor = FastFrameProcessor(
     socketio,
     store,
     output_dir=str(BASE_DIR / "AviToFrame" / "frames_local"),
+    diff_threshold=FRAME_DIFF_THRESHOLD,
     max_saved_images=FRAME_STORAGE_LIMIT,
 )
 frame_processor.bind_queue(frame_queue)
@@ -246,12 +285,39 @@ def api_frame_cleanup():
     socketio.emit("frame_storage_update", payload)
     return jsonify({"status": "ok", **payload})
 
+@app.route("/api/system/status")
+def api_system_status():
+    """返回运行环境与各模块状态，方便在树莓派这类设备上快速排查问题。"""
+    return jsonify({
+        "python": platform.python_version(),
+        "machine": platform.machine(),
+        "system": platform.system(),
+        "yolo": yolo.get_status(),
+        "sensor": sensor.get_status(),
+        "camera": camera.get_source_status(),
+        "frames": {
+            "output_dir": str(BASE_DIR / "AviToFrame" / "frames_local"),
+            "max_saved_images": FRAME_STORAGE_LIMIT,
+        },
+    })
+
 # ── WebSocket 事件 ────────────────────────────────────────────
+# 注意：flask-socketio 5.x 会先按 `handler(auth)` 调用 connect 回调，多带一个 auth 参数。
+# 之前写成 on_connect() 不带参数，会先抛 TypeError；库内部虽会回退到 `handler()` 再调一次，
+# 但一旦回退路径里再抛异常（比如读关键帧目录失败），连接就会整体失败、页面收不到任何状态。
+# 所以这里显式声明可选参数，不依赖库内部的回退行为。
 @socketio.on("connect")
-def on_connect():
+def on_connect(auth=None):
     print(f"[WS] 客户端接入: {request.sid}")
-    emit("camera_source_update", camera.get_source_status() | {"options": VIDEO_SOURCE_OPTIONS})
-    emit("frame_storage_update", frame_processor.get_storage_status())
+    # 连接回调里任何一步失败都会让客户端连不上，这里逐块兜底。
+    try:
+        emit("camera_source_update", camera.get_source_status() | {"options": VIDEO_SOURCE_OPTIONS})
+    except Exception as exc:
+        print(f"[WS] 推送视频源状态失败: {exc}")
+    try:
+        emit("frame_storage_update", frame_processor.get_storage_status())
+    except Exception as exc:
+        print(f"[WS] 推送关键帧存储状态失败: {exc}")
     emit("yolo_status_update", yolo.get_status())
     latest_yolo = yolo.get_latest_payload()
     if latest_yolo:
@@ -271,8 +337,9 @@ def on_connect():
             emit("frame", {"image": frame_b64})
 
 @socketio.on("disconnect")
-def on_disconnect():
-    print(f"[WS] 客户端断开: {request.sid}")
+def on_disconnect(reason=None):
+    # 5.x 的 disconnect 回调同样可能带一个 reason 参数。
+    print(f"[WS] 客户端断开: {request.sid} ({reason})")
 
 @socketio.on("request_frame")
 def on_request_frame():
@@ -293,11 +360,30 @@ def on_request_frame():
 # ── 启动 ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     # 本地启动时直接把后台服务都拉起来，这样打开浏览器就能看到效果。
+    print("=" * 60)
+    print(f"[App] Python {platform.python_version()} / {platform.machine()} / {platform.system()}")
+    print(f"[App] YOLO 后端: {YOLO_BACKEND} (imgsz={YOLO_IMGSZ}, interval={YOLO_INTERVAL})")
+    print(f"[App] 视频源: {DEFAULT_STREAM_SOURCE}")
+    print(f"[App] 传感器端口: {sensor.port}（Linux 上 <1024 会自动回退到 1333）")
+    print("=" * 60)
     sensor.start()          # 监听单片机传来的温湿度数据
     camera.start()          # 从本地摄像头 / RTSP 开始采集帧
     yolo.start()            # YOLO 识别结果直接推给前端
     frame_processor.start()  # 持续抽取关键帧并向前端推送
     # Flask 的 debug 模式默认会启用自动重载，这会让后台线程在父进程和子进程里各启动一次。
-    # 对视频流和 TCP 监听来说，这通常会造成重复连接、重复消费和难以排查的解码噪声。
+    # 对视频流和 UDP 监听来说，这通常会造成重复连接、重复消费和难以排查的解码噪声。
     # 这里保留 debug 页面，但关闭 reloader，保证采集链路只启动一份。
-    socketio.run(app, host="0.0.0.0", port=5000, debug=True, use_reloader=False)
+    debug_enabled = os.getenv("SMART_CAMERA_DEBUG", "1") not in ("0", "false", "False")
+    web_port = int(os.getenv("SMART_CAMERA_PORT", "5000"))
+    socketio.run(
+        app,
+        host="0.0.0.0",
+        port=web_port,
+        debug=debug_enabled,
+        use_reloader=False,
+        # flask-socketio 在 threading 模式下只要 stdin 不是终端（nohup / setsid / systemd /
+        # Docker 都是这种情况）就会抛 “The Werkzeug web server is not designed to run in
+        # production”。本项目就是局域网自用 + Werkzeug 开发服务器，这里显式关掉该检查，
+        # 否则后台启动必然失败。
+        allow_unsafe_werkzeug=True,
+    )
