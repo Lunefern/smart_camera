@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import platform
 import queue
+import socket
 import sys
 from pathlib import Path
 
@@ -381,6 +382,38 @@ def on_request_frame():
         emit("frame", {"image": frame_b64})
 
 # ── 启动 ──────────────────────────────────────────────────────
+def _port_is_free(port: int) -> bool:
+    """检查 TCP 端口能否绑定，用于在启动后台线程之前给出明确提示。
+
+    这样端口冲突时就不会先抢一遍摄像头：摄像头是独占设备，抢到再退出会让
+    正在运行的实例看起来“摄像头坏了”。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        try:
+            probe.bind(("0.0.0.0", port))
+        except OSError:
+            return False
+    return True
+
+
+def _abort_if_port_busy(port: int) -> None:
+    """端口被占用时打印可执行的解决办法并退出。"""
+    if _port_is_free(port):
+        return
+    print()
+    print(f"[启动失败] Web 端口已被占用: {port}")
+    print("  最常见的原因：已经有一个 app.py 在运行，它同时占着这个端口和摄像头。")
+    print("  1) 查看占用进程：")
+    print(f"       Linux:   ss -ltnp | grep :{port}")
+    print(f"       Windows: netstat -ano | findstr :{port}")
+    print("  2) 停掉旧实例：")
+    print("       Linux:   pkill -f '[a]pp.py'")
+    print(f"  3) 或者换一个端口启动（摄像头仍然只能被一个实例打开）：")
+    print(f"       SMART_CAMERA_PORT={port + 1} ./run.sh")
+    print()
+    raise SystemExit(1)
+
+
 if __name__ == "__main__":
     # 本地启动时直接把后台服务都拉起来，这样打开浏览器就能看到效果。
     print("=" * 60)
@@ -389,6 +422,9 @@ if __name__ == "__main__":
     print(f"[App] 视频源: {DEFAULT_STREAM_SOURCE}")
     print(f"[App] 传感器端口: {sensor.port}（Linux 上 <1024 会自动回退到 1333）")
     print("=" * 60)
+    # 先确认端口可用，再启动会独占摄像头的采集线程。
+    web_port = int(os.getenv("SMART_CAMERA_PORT", "5000"))
+    _abort_if_port_busy(web_port)
     sensor.start()          # 监听单片机传来的温湿度数据
     camera.start()          # 从本地摄像头 / RTSP 开始采集帧
     yolo.start()            # YOLO 识别结果直接推给前端
@@ -397,7 +433,6 @@ if __name__ == "__main__":
     # 对视频流和 UDP 监听来说，这通常会造成重复连接、重复消费和难以排查的解码噪声。
     # 这里保留 debug 页面，但关闭 reloader，保证采集链路只启动一份。
     debug_enabled = os.getenv("SMART_CAMERA_DEBUG", "1") not in ("0", "false", "False")
-    web_port = int(os.getenv("SMART_CAMERA_PORT", "5000"))
     socketio.run(
         app,
         host="0.0.0.0",

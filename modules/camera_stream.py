@@ -146,7 +146,17 @@ class CameraStream:
             self._cap = self._open_capture()
             cap = self._cap
         if cap is None:
-            print("[Camera] 无法打开任何视频源")
+            tried = "、".join(str(src) for src in self._candidate_sources())
+            print(f"[Camera] 无法打开任何视频源（已尝试: {tried}）")
+            print("  按下面的顺序排查：")
+            print("   1) 设备被别的进程占用（最常见：已经有一个 app.py 在跑）。摄像头是独占设备，")
+            print("      同一时间只能被一个程序打开。查看占用：")
+            print("        sudo fuser -v /dev/video0    或    pgrep -af app.py")
+            print("      停掉旧实例后重试：pkill -f '[a]pp.py'")
+            print("   2) 设备号/路径不对。列出真正的采集节点：")
+            print("        v4l2-ctl --list-devices       （没装的话: sudo apt install v4l-utils）")
+            print("      再用 SMART_CAMERA_SOURCE=/dev/video0 之类指定")
+            print("   3) 当前用户不在 video 组：id | grep video")
             self._running = False
             return
 
