@@ -23,17 +23,40 @@ try:
     from flask_socketio import SocketIO, emit
     from flask_cors import CORS
 except ModuleNotFoundError as exc:
-    # 依赖缺失是最常见的启动失败原因，直接抛出 ModuleNotFoundError 很难定位到底是
-    # “没装依赖”还是“装到了另一个解释器”。这里给出缺少的包名、当前解释器路径和修复命令。
-    raise SystemExit(
-        f"\n[启动失败] 缺少 Python 依赖: {exc.name}\n"
-        f"当前解释器: {sys.executable}\n"
-        f"Python 版本: {sys.version.split()[0]}\n"
-        "请在项目根目录执行下面的命令安装依赖:\n"
-        "    python -m pip install -r requirements.txt\n"
-        "如果依赖已经装过，请确认运行 app.py 的解释器和安装依赖的是同一个，"
-        "例如统一使用 `python app.py` 启动。\n"
-    )
+    # 依赖缺失是最常见的启动失败原因，直接抛 ModuleNotFoundError 很难区分
+    # “没装依赖”和“装到了另一个解释器（比如忘了激活 venv）”。
+    # 这里把缺的包、当前解释器、以及项目里是否已有可用 venv 都讲清楚。
+    _project_dir = Path(__file__).resolve().parent
+    _venv_python = _project_dir / ".venv" / "bin" / "python"
+    _in_venv = sys.prefix != sys.base_prefix
+    _lines = [
+        f"\n[启动失败] 缺少 Python 依赖: {exc.name}",
+        f"当前解释器: {sys.executable}",
+        f"Python 版本: {sys.version.split()[0]}",
+        f"是否在虚拟环境中: {'是' if _in_venv else '否'}",
+        "",
+    ]
+    if _venv_python.exists() and not _in_venv:
+        # 项目里已经有 .venv 却没激活，这是最常见的情况，直接给可复制的命令。
+        _lines += [
+            f"检测到项目内已有虚拟环境: {_project_dir / '.venv'}",
+            "依赖装在这个环境里，所以要用它来启动（三选一）：",
+            "    source .venv/bin/activate && python app.py",
+            "    .venv/bin/python app.py",
+            "    ./run.sh",
+        ]
+    else:
+        _lines += [
+            "请在项目根目录安装依赖:",
+            "    python -m pip install -r requirements.txt",
+            "（树莓派推荐先建虚拟环境: python -m venv .venv && source .venv/bin/activate）",
+        ]
+    _lines += [
+        "",
+        "如果依赖确实已经装过，请确认运行 app.py 的解释器和安装依赖的是同一个。",
+        "\n",
+    ]
+    raise SystemExit("\n".join(_lines))
 
 from modules.sensor_server import SensorServer
 from modules.camera_stream import CameraStream

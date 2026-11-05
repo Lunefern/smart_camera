@@ -19,6 +19,7 @@
 ```text
 smart_camera/
 ├─ app.py
+├─ run.sh                   # 启动脚本：自动使用 .venv 里的解释器
 ├─ diagnose_env.py          # 运行环境自检（定位 Illegal instruction 之类崩溃）
 ├─ requirements.txt         # PC：含 ultralytics + torch
 ├─ requirements-pi.txt      # 树莓派：不含 torch，走 OpenCV DNN
@@ -194,25 +195,44 @@ sudo apt install -y python3-opencv python3-numpy
 
 ### 3. 启动
 
-树莓派上直接 `python app.py` 就行，两个默认行为已经适配好：
-
-- `SMART_CAMERA_YOLO_BACKEND=auto` 在 `aarch64` 上自动选 `dnn`，不会碰 torch
-- 传感器端口 `333` 需要特权时自动回退到 `1333`，并在日志里提示
+**推荐用 `./run.sh`**：它总是用项目内 `.venv` 的解释器启动，不依赖你有没有 `source .venv/bin/activate`。
 
 ```bash
+./run.sh
+```
+
+也可以手动指定解释器（效果相同）：
+
+```bash
+.venv/bin/python app.py
+```
+
+如果你习惯先激活再启动：
+
+```bash
+source .venv/bin/activate
 python app.py
 ```
+
+⚠️ 树莓派系统自带的 `/usr/bin/python` 里**没有装依赖**（依赖只在 `.venv` 里）。
+在没激活 venv 的 shell 里直接 `python app.py` 会看到 `[启动失败] 缺少 Python 依赖: flask`，
+提示里会指出 `.venv` 的位置和可用命令。
+
+两个默认行为已经适配好：
+
+- `SMART_CAMERA_YOLO_BACKEND=auto` 在 `aarch64` 上自动选 `dnn`，不会碰 torch
+- 传感器端口 `333` 绑不上时自动回退到 `1333`，并在日志里提示
 
 后台常驻：
 
 ```bash
-setsid nohup python app.py > run.log 2>&1 < /dev/null &
+setsid nohup ./run.sh > run.log 2>&1 < /dev/null &
 ```
 
 2GB 机型如果想再省 CPU，可以把推理改成隔帧（`imgsz` 保持 640，因为 ONNX 是固定输入）：
 
 ```bash
-SMART_CAMERA_YOLO_INTERVAL=2 python app.py
+SMART_CAMERA_YOLO_INTERVAL=2 ./run.sh
 ```
 
 ### 4. 传感器端口权限
@@ -388,8 +408,12 @@ setsid nohup python app.py > run.log 2>&1 < /dev/null &
 - Web 服务默认端口：`5000`，可用 `SMART_CAMERA_PORT` 覆盖
 - 传感器监听端口：默认 `333`，可用 `SENSOR_PORT` 覆盖
 
-Linux / 树莓派上 `333` 属于特权端口，普通用户会看到 `PermissionError`，改用
-`SENSOR_PORT=1333 python app.py` 即可（详见上面的树莓派部署一节）。
+Linux / 树莓派上 `333` 属于特权端口：绑不上会自动回退到 `1333`。
+如果希望继续用 `333`，给 Python 授权即可（详见树莓派部署一节）：
+
+```bash
+sudo setcap 'cap_net_bind_service=+ep' $(readlink -f $(which python3))
+```
 
 ### 4. YOLO 没有结果
 
@@ -399,9 +423,25 @@ Linux / 树莓派上 `333` 属于特权端口，普通用户会看到 `Permissio
 - 如果日志里出现 `RuntimeError: Numpy is not available`，说明 `numpy` 和 `torch` 的版本互相不匹配（常见于 numpy 2.x 配了只支持 numpy 1.x 的 torch），按 `requirements.txt` 重装这两个包即可
 - 如果进程直接退出、日志最后一行是 `Illegal instruction`，见上面的“树莓派部署 → 出现 Illegal instruction”
 
-### 5. 启动时报 `ModuleNotFoundError: No module named 'flask'`
+### 5. 启动时报 `[启动失败] 缺少 Python 依赖: flask`
 
-这是依赖没装到当前解释器里。先看启动时打印的“当前解释器”路径，然后执行：
+说明依赖没装到当前解释器里。启动时的提示已经会打印「当前解释器」和「是否在虚拟环境中」，
+最省事的做法是直接用项目里的启动脚本：
+
+```bash
+./run.sh
+```
+
+树莓派上最常见的坑：依赖装在 `.venv` 里，但新开的 SSH 会话没有激活 venv，
+于是 `python` 指向了没装依赖的 `/usr/bin/python`。三种正确启动方式：
+
+```bash
+source .venv/bin/activate && python app.py     # 先激活
+.venv/bin/python app.py                        # 直接用 venv 的解释器
+./run.sh                                       # 用项目脚本（推荐）
+```
+
+Windows / PC 上如果确实没装依赖，按提示执行：
 
 ```bash
 python -m pip install -r requirements.txt
