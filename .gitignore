@@ -1,1 +1,21 @@
-/__pycache__
+# ── Python ──
+__pycache__/
+*.py[cod]
+*.pyo
+
+# ── 虚拟环境 ──
+.venv/
+venv/
+
+# ── 运行时产物 ──
+# 关键帧图片：由 FastFrameProcessor 在运行时写入 AviToFrame/frames_local/
+AviToFrame/frames_local/
+# 本地数据库、日志、临时视频
+*.db
+log.log
+run.log
+AviToFrame/tmp.avi
+
+# ── 系统 ──
+.DS_Store
+Thumbs.db
