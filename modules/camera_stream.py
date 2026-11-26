@@ -60,6 +60,15 @@ class CameraStream:
     def stop(self):
         # 先把运行标记清掉，让采集线程尽快退出。
         self._running = False
+
+        # 关键：必须等采集线程从阻塞的 cap.read() 里退出来，再 release。
+        # 否则 release 和 read 并发时 OpenCV 会抛
+        #   cv2.error: (-215:Assertion failed) is_m1_vector
+        # 把采集线程直接打死（语音指令 / 接口频繁 stop-start 时很容易触发）。
+        thread = self._thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=2.0)
+
         with self._lock:
             cap = self._cap
             self._cap = None
@@ -169,7 +178,16 @@ class CameraStream:
             if cap is None:
                 break
 
-            ret, frame = cap.read()
+            # 停止流程会 release 句柄，此时并发中的 read() 会抛 OpenCV 断言异常。
+            # 这类异常是「正在停止」的正常副作用，不该让线程带着 traceback 死掉。
+            try:
+                ret, frame = cap.read()
+            except Exception as exc:
+                if not self._running:
+                    break
+                print(f"[Camera] 读帧异常: {exc}")
+                ret, frame = False, None
+
             if not ret:
                 if self._source_is_file:
                     # 如果当前源是文件，那么读到末尾后直接回到开头循环播放。
@@ -198,6 +216,9 @@ class CameraStream:
 
             # 用简单等待代替忙轮询，降低 CPU 占用。
             threading.Event().wait(interval)
+
+        # 无论是因为停止还是重连失败退出，都让状态如实反映「没在采集」
+        self._running = False
 
     def _open_capture(self):
         # 尝试按优先级依次打开候选视频源：
