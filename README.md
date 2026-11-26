@@ -4,6 +4,9 @@
 
 当前默认使用仓库内置的 [`YOLOModel/best.pt`](/E:/DOC2/PyCharm/smart_camera/YOLOModel/best.pt) 做识别，默认输入源是本地摄像头 `0`。接 RTSP、文件流或其它摄像头编号，可以直接在页面里切换。
 
+> **接手项目请先读 [HANDOVER.md](HANDOVER.md)**：里面有当前部署现状、开机自启配置、
+> 踩坑记录、排障速查表和交接清单。开发流程见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
 ## 功能
 
 - Web 页面展示 YOLO 识别后的带框画面
@@ -11,6 +14,8 @@
 - 关键帧抽取与本地保存
 - 关键帧自动清理和手动清理
 - 传感器数据面板与趋势图
+- 离线语音识别（vosk）与语音指令「打开/关闭摄像头」
+- systemd 开机自启，断电重启后自动恢复
 - WebSocket 实时推送
 - 预留 YOLO 分类、分割等后续扩展入口
 
@@ -20,6 +25,8 @@
 smart_camera/
 ├─ app.py
 ├─ run.sh                   # 启动脚本：自动使用 .venv 里的解释器
+├─ HANDOVER.md              # 交接文档：部署现状 / 踩坑记录 / 排障清单
+├─ CONTRIBUTING.md          # 协作流程：分支模型、提交、树莓派同步
 ├─ diagnose_env.py          # 运行环境自检（定位 Illegal instruction 之类崩溃）
 ├─ requirements.txt         # PC：含 ultralytics + torch
 ├─ requirements-pi.txt      # 树莓派：不含 torch，走 OpenCV DNN + vosk
