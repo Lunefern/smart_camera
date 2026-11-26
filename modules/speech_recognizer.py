@@ -195,6 +195,10 @@ class SpeechRecognizer:
         status["enabled_setting"] = str(self.enabled_setting)
         status["model_exists"] = self.model_ready
         status["running"] = self._running
+        # _status 只在状态变化时刷新，这里补上实时电平，方便现场调门限
+        status["last_level_dbfs"] = (
+            round(self._last_level_db, 1) if self._last_level_db is not None else None
+        )
         return status
 
     def get_latest(self) -> dict:
