@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 import platform
 import queue
+import signal
 import socket
 import sys
 from pathlib import Path
@@ -511,13 +512,50 @@ def _port_is_free(port: int) -> bool:
 
     这样端口冲突时就不会先抢一遍摄像头：摄像头是独占设备，抢到再退出会让
     正在运行的实例看起来“摄像头坏了”。
+
+    必须设置 SO_REUSEADDR：进程刚退出时旧连接会停留在 TIME_WAIT，不设这个选项
+    会把“几分钟后自动释放的残留连接”误判成“端口被占用”，导致
+    `systemctl restart` 白失败好几次（实测连续失败 2 次才起来）。
+    设了之后仍能正确检出真正的 LISTEN 占用（Linux 上对活动监听者 bind 会报 EADDRINUSE）。
     """
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(("0.0.0.0", port))
         except OSError:
             return False
     return True
+
+
+def _install_signal_handlers() -> None:
+    """收到 SIGTERM / SIGINT 时优雅退出。
+
+    systemd 停服务时默认发 SIGTERM。如果不处理，进程会立刻死掉：
+    arecord 子进程收不到清理（实测被 systemd 直接 SIGKILL），摄像头句柄也只能
+    靠内核回收，紧接着的新实例容易抢不到设备和端口。这里先主动释放再退出。
+    """
+
+    def _shutdown(signum, _frame):
+        print(f"\n[App] 收到信号 {signum}，正在停止各模块…", flush=True)
+        for name, stop in (
+            ("关键帧处理", frame_processor.stop),
+            ("YOLO", yolo.stop),
+            ("语音识别", speech.stop),
+            ("摄像头", camera.stop),
+            ("传感器", sensor.stop),
+        ):
+            try:
+                stop()
+            except Exception as exc:
+                print(f"[App] 停止{name}失败: {exc}", flush=True)
+        print("[App] 资源已释放，退出", flush=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # 用 os._exit 跳过解释器清理：后台线程可能还卡在阻塞读上，正常退出会被拖住
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
 
 
 def _abort_if_port_busy(port: int) -> None:
@@ -550,6 +588,8 @@ if __name__ == "__main__":
     # 先确认端口可用，再启动会独占摄像头的采集线程。
     web_port = int(os.getenv("SMART_CAMERA_PORT", "5000"))
     _abort_if_port_busy(web_port)
+    # systemd stop/restart 会发 SIGTERM，这里先注册处理函数再启动线程
+    _install_signal_handlers()
     sensor.start()          # 监听单片机传来的温湿度数据
     camera.start()          # 从本地摄像头 / RTSP 开始采集帧
     yolo.start()            # YOLO 识别结果直接推给前端
