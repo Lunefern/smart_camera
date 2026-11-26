@@ -105,6 +105,10 @@ SPEECH_MODEL_DIR = Path(
 )
 # ALSA 录音设备。留空则自动挑第一个“非摄像头/非 HDMI”的录音设备（即外接 USB 麦克风）。
 SPEECH_DEVICE = os.getenv("SMART_CAMERA_SPEECH_DEVICE") or None
+# 电平门限（dBFS）：低于这个电平的片段不产出识别结果。
+# 麦克风灵敏度低时，环境噪声会被强行解码成随机汉字，加门限可以避免刷屏。
+# 觉得漏掉小声说话就调低（如 -60），觉得噪声误识别太多就调高（如 -40）。
+SPEECH_MIN_DBFS = float(os.getenv("SMART_CAMERA_SPEECH_MIN_DBFS", "-50"))
 
 # 视频源优先级：
 # 1) 环境变量 SMART_CAMERA_SOURCE
@@ -195,6 +199,7 @@ speech = SpeechRecognizer(
     model_dir=SPEECH_MODEL_DIR,
     device=SPEECH_DEVICE,
     enabled=SPEECH_ENABLED,
+    min_dbfs=SPEECH_MIN_DBFS,
 )
 
 # ── HTTP 路由 ─────────────────────────────────────────────────

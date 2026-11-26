@@ -25,6 +25,7 @@ modules/speech_recognizer.py
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -37,6 +38,11 @@ try:
     import vosk
 except ImportError:  # 未安装时模块仍可导入，只是启动后状态显示"未安装"
     vosk = None
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 
 # vosk 要求 16kHz / 16bit / 单声道，写死避免调用方传错。
@@ -115,6 +121,7 @@ class SpeechRecognizer:
         sample_rate: int = SAMPLE_RATE,
         enabled: str | bool = "auto",
         partial_interval: float = 0.5,
+        min_dbfs: float = -50.0,
     ):
         self.socketio = socketio
         self.store = store
@@ -124,6 +131,9 @@ class SpeechRecognizer:
         self.sample_rate = int(sample_rate)
         self.enabled_setting = enabled
         self.partial_interval = float(partial_interval)
+        # 电平门限：低于这个 dBFS 的片段不产出结果。
+        # 麦克风灵敏度低时环境噪声会被强行解码成随机汉字，加门限可以避免刷屏。
+        self.min_dbfs = float(min_dbfs)
 
         self._model = None
         self._thread: threading.Thread | None = None
@@ -131,6 +141,8 @@ class SpeechRecognizer:
         self._running = False
         self._latest: dict | None = None
         self._active_device: str | None = None
+        # 最近一次判定时测到的电平，放在状态里方便调门限
+        self._last_level_db: float | None = None
         self._status: dict = {
             "state": "idle",
             "message": "等待启动",
@@ -260,30 +272,58 @@ class SpeechRecognizer:
 
         last_partial = ""
         last_partial_at = 0.0
+        # 当前这句话里“最响的那一小段 RMS”，用来判断结果是否可信。
+        # 注意用 RMS 而不是峰值：环境噪声常有单个尖峰（峰值能到 -35 dBFS），
+        # 但整体能量很低（RMS 约 -61 dBFS），用峰值做门限会被尖峰骗过去。
+        seg_rms_max = 0.0
         try:
             while self._running:
                 data = proc.stdout.read(chunk_bytes)
                 if not data:
                     # 进程退出或设备断开
                     break
+                rms = self._chunk_rms(data)
+                seg_rms_max = max(seg_rms_max, rms)
                 if recognizer.AcceptWaveform(data):
                     text = json.loads(recognizer.Result()).get("text", "").strip()
+                    heard_db = 20 * math.log10(seg_rms_max / 32768.0) if seg_rms_max > 0 else -99.0
+                    seg_rms_max = 0.0
                     last_partial = ""
-                    if text:
-                        self._publish(text, final=True)
+                    self._last_level_db = heard_db
+                    if text and heard_db >= self.min_dbfs:
+                        self._publish(text, final=True, dbfs=heard_db)
+                    elif text:
+                        # 电平太低，基本可以确定是环境噪声被硬解出来的
+                        print(f"[Speech] 忽略低电平结果 ({heard_db:.0f} dBFS < {self.min_dbfs:.0f}): {text}")
                 else:
                     partial = json.loads(recognizer.PartialResult()).get("partial", "").strip()
                     now = time.time()
+                    heard_db = 20 * math.log10(seg_rms_max / 32768.0) if seg_rms_max > 0 else -99.0
                     if (
                         partial
                         and partial != last_partial
                         and now - last_partial_at >= self.partial_interval
+                        and heard_db >= self.min_dbfs
                     ):
                         last_partial = partial
                         last_partial_at = now
-                        self._publish(partial, final=False)
+                        self._publish(partial, final=False, dbfs=heard_db)
         finally:
             self._terminate_proc()
+
+    @staticmethod
+    def _chunk_rms(data: bytes) -> float:
+        """返回这段 16bit PCM 的 RMS 幅度（0~32768），用于电平门限判断。"""
+        if np is None or not data:
+            return 32768.0  # 没有 numpy 就不做门限，保证功能可用
+        try:
+            samples = np.frombuffer(data, dtype=np.int16)
+        except ValueError:
+            return 0.0
+        if samples.size == 0:
+            return 0.0
+        as_float = samples.astype(np.float32)
+        return float(np.sqrt(np.mean(as_float * as_float)))
 
     def _terminate_proc(self):
         proc = self._proc
@@ -299,7 +339,7 @@ class SpeechRecognizer:
             except Exception:
                 pass
 
-    def _publish(self, text: str, final: bool):
+    def _publish(self, text: str, final: bool, dbfs: float | None = None):
         payload = {
             "timestamp": datetime.now().isoformat(),
             "text": text,
@@ -307,6 +347,8 @@ class SpeechRecognizer:
             "device": self._active_device,
             "model": self.model_dir.name if self.model_dir else None,
         }
+        if dbfs is not None:
+            payload["dbfs"] = round(dbfs, 1)
         if final:
             self._latest = payload
             if self.store is not None:
@@ -330,6 +372,8 @@ class SpeechRecognizer:
             "model_dir": str(self.model_dir) if self.model_dir else None,
             "device": self._active_device,
             "sample_rate": self.sample_rate,
+            "min_dbfs": self.min_dbfs,
+            "last_level_dbfs": round(self._last_level_db, 1) if self._last_level_db is not None else None,
             "available_devices": list_capture_devices(),
             "running": self._running,
         }

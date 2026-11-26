@@ -323,6 +323,7 @@ curl -s http://127.0.0.1:5000/api/system/status | python -m json.tool
 | `SMART_CAMERA_SPEECH` | `auto` | 语音识别开关：`auto`（模型+设备都在就开）/ `1` / `0` |
 | `SMART_CAMERA_SPEECH_MODEL` | `vosk-model-small-cn-0.22` | vosk 模型目录 |
 | `SMART_CAMERA_SPEECH_DEVICE` | 自动 | ALSA 录音设备，如 `plughw:4,0`；留空自动选外接麦克风 |
+| `SMART_CAMERA_SPEECH_MIN_DBFS` | `-50` | 电平门限，低于此值不产出识别结果（防环境噪声被解成乱码） |
 
 ## 语音识别（vosk，离线）
 
@@ -365,6 +366,22 @@ curl -s http://127.0.0.1:5000/api/speech/status  # 看程序选中的设备
 
 电平偏低时（`arecord` 录出来的 RMS 比环境噪声高不了多少），说话离麦克风近一点，
 或者用 `SMART_CAMERA_SPEECH_DEVICE` 显式指定设备。
+
+### 电平门限（避免噪声被识别成乱码）
+
+麦克风灵敏度不够时，vosk 会把环境噪声“强行”解码成随机汉字（实测出现过
+「而是」「口号」「呃 地方」这类输出）。所以识别层加了**电平门限**：
+每个音频片段先算峰值，低于 `SMART_CAMERA_SPEECH_MIN_DBFS`（默认 `-50` dBFS）
+就丢弃这次结果，不进数据库也不推给前端。
+
+- 噪声误识别太多 → 调高（如 `-40`）
+- 小声说话经常漏掉 → 调低（如 `-60`）
+
+被丢弃的结果会在日志里留一行，方便判断门限是否合适：
+
+```
+[Speech] 忽略低电平结果 (-61 dBFS < -50): 而是
+```
 
 ### 资源占用（树莓派 4B）
 
