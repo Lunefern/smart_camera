@@ -34,6 +34,8 @@ smart_camera/
 │  └─ yolo_processor.py
 ├─ scripts/
 │  └─ download_vosk_model.sh  # 下载 vosk 中文模型（模型不进仓库）
+├─ deploy/
+│  └─ smart-camera.service    # systemd 开机自启服务
 ├─ templates/
 │  └─ index.html
 ├─ YOLOModel/
@@ -459,6 +461,48 @@ voice_router = VoiceCommandRouter(socketio, {
 ```bash
 setsid nohup python app.py > run.log 2>&1 < /dev/null &
 ```
+
+## 开机自启（systemd）
+
+树莓派上部署成系统服务，断电重启后自动拉起。service 文件已放在
+`deploy/smart-camera.service`。
+
+### 安装
+
+```bash
+sudo install -m 644 deploy/smart-camera.service /etc/systemd/system/smart-camera.service
+sudo systemctl daemon-reload
+sudo systemctl enable smart-camera.service   # 开机自启
+sudo systemctl start smart-camera.service    # 立刻启动一次
+```
+
+### 常用命令
+
+```bash
+systemctl status smart-camera.service        # 运行状态 + 进程树
+sudo systemctl restart smart-camera.service  # 改完代码后重启
+sudo systemctl stop smart-camera.service     # 停止
+sudo systemctl disable smart-camera.service  # 取消开机自启
+journalctl -u smart-camera.service -b -f     # 实时看日志（-b 只看本次开机）
+```
+
+### 这个 unit 做了哪些处理
+
+- `ExecStartPre`：开机时 USB 枚举可能比 systemd 慢，先等 `/dev/video0` 和声卡出现
+  （最多 30 秒），避免摄像头/麦克风还没就绪就启动
+- `ExecStart=/home/admin/smart_camera/run.sh`：自动使用 `.venv` 解释器
+- `Restart=always` + `RestartSec=5`：进程异常退出后自动拉起
+- `KillMode=mixed` + `TimeoutStopSec=20`：停止时先 SIGTERM，让 `arecord` 子进程
+  和摄像头句柄正常释放，避免设备被占住
+- 输出同时进 journal 和项目里的 `run.log`
+
+### 注意事项
+
+- **服务运行时不要再手动 `./run.sh`**：摄像头和 5000 端口都是独占的，
+  手动实例会因为端口占用直接退出（会打印明确提示）
+- 需要手动调试时先 `sudo systemctl stop smart-camera.service`，调完再 `start`
+- 实测（树莓派 4B）：重启后 **9 秒**服务起来，首页 200、摄像头/YOLO/语音/传感器
+  全部正常，`NRestarts=0`、日志无 Traceback
 
 ## 后端接口
 
