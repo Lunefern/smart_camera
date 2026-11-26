@@ -6,10 +6,13 @@
 > 安装与接口细节见 [README.md](README.md)，本文不重复，只讲交接需要知道的。
 >
 > **最后核对时间**：2026-11-26 15:39（树莓派在线核对）
-> **对应提交**：`dev` = `2603ef6`，`main` = `3e81db5`
+> **文档版本**：随仓库更新，以 `dev` 分支最新提交为准（撰写本文时 `dev` = `01f56b2`）
 >
 > 📌 撰写本文期间树莓派断过一次电（约 15:00–15:37），恢复后**服务再次自动拉起**、
-> 各模块正常，第 4 节的数据包含这次验证。接手时仍建议先确认供电稳定。
+> 各模块正常，第 4 节的数据包含这次验证。
+>
+> ⚡ **自 2026-11-26 本次会话结束起，树莓派将断电存放，直到下次开发。**
+> 下次接手时设备大概率是关着的 —— 先上电，步骤见第 13 节。
 
 ---
 
@@ -411,14 +414,15 @@ curl -X POST http://127.0.0.1:5000/api/voice/command \
 | 语音识别出乱码 | 上面的 `last_level_dbfs` | 环境噪声/媒体声；调高 `SMART_CAMERA_SPEECH_MIN_DBFS`；说话靠近麦克风 |
 | `systemctl restart` 失败 | journal + `run.log` | 端口 TIME_WAIT 误判（已修）；手动实例还在跑 |
 | 开机后没自启 | `systemctl is-enabled` / `journalctl -b` | 未 enable；`ExecStartPre` 等设备超时；服务报错退出 |
-| 树莓派连不上 SSH | 供电、网线/WiFi、IP 是否变 | 本文写作时它就离线了；重启后 IP 若变化需重新确认（路由器里看 `smartCamera`） |
+| 树莓派连不上 SSH | 先确认**是否处于断电存放状态**，再看供电/网线/IP | 见第 13 节：设备在两次开发之间是关着的，**先上电**；开机后 IP 若变，去路由器里找 `smartCamera` |
 
 ---
 
 ## 12. 交接清单
 
+- [ ] **先给树莓派上电**（两次开发之间它是断电存放的，见第 13 节），等约 60 秒
 - [ ] **能连上树莓派**：`ssh admin@192.168.137.77`（密码线下交接；IP 由路由器 DHCP，建议在路由器上做静态绑定）
-- [ ] **确认服务自启**：重启一次，等约 60 秒，`systemctl is-active smart-camera.service` 应为 `active`
+- [ ] **确认服务自启**：`systemctl is-active smart-camera.service` 应为 `active`；必要时重启一次再等 60 秒
 - [ ] **打开网页确认功能**：`http://192.168.137.77:5000` → 画面有框、传感器有数、语音卡片状态正常
 - [ ] **确认语音**：对着麦克风说「打开 摄像头」/「关闭 摄像头」
 - [ ] **拿到仓库**：<https://github.com/Lunefern/smart_camera>（`dev` 开发、`main` 稳定）
@@ -427,3 +431,61 @@ curl -X POST http://127.0.0.1:5000/api/voice/command \
 - [ ] **知道现有备份位置**：`~/smart_camera_backup_20261103_213409/`
 - [ ] **知道数据在哪**：`smart_camera.db`（传感器/检测/语音记录）、`AviToFrame/frames_local/`（关键帧图片）
 - [ ] **知道怎么排出厂设置**：删 `smart_camera.db` 与 `frames_local/` 即可清空历史（模型与代码不受影响）
+
+---
+
+## 13. 下次开发前的断电状态（临时说明）
+
+> 这一节是**临时状态记录**，不是项目的永久属性。下次开发结束时，请更新或删除本节。
+
+### 13.1 现状
+
+- 本节记录时间：**2026-11-26 15:39**（当时树莓派在线、服务 `active`）
+- 自本次会话结束起，**树莓派将断电存放，直到下次开发**（不是休眠，是断电）
+- 也就是说：下次接手时 `ssh admin@192.168.137.77` 大概率是连不上的，**这是预期行为**
+
+### 13.2 断电期间会丢什么、不会丢什么
+
+| 项目 | 断电影响 |
+| --- | --- |
+| 代码 / 模型 / 依赖（`~/smart_camera`、`.venv`、`vosk-model-*`） | ✅ 都在 SD 卡上，不丢 |
+| SQLite 数据（`smart_camera.db`）与关键帧图片 | ✅ 已落盘，不丢（断电瞬间正在写的那几行可能丢，属正常） |
+| 服务自启配置（`systemctl enable` 的软链） | ✅ 持久化在磁盘上，上电后自动生效 |
+| 传感器端口的 `setcap` 能力 | ✅ 记在 `/usr/bin/python3.13` 上，上电后仍有效 |
+| 运行中的进程 / 内存状态 | ❌ 全部丢失（会自动重建） |
+| **IP 地址** | ⚠️ DHCP 分配，**上电后可能变化**，这是最容易踩的一点 |
+
+### 13.3 下次开发的第一组动作
+
+```bash
+# 1) 上电，等约 60 秒（开机 + 服务自启 + 摄像头/麦克风枚举）
+
+# 2) 确认 IP：如果 192.168.137.77 连不上，先在路由器里找主机名 smartCamera，
+#    或从 Windows 热点侧扫一遍：
+#    powershell: arp -a | findstr /i 192.168.137
+
+# 3) 验证服务已自启
+ssh admin@192.168.137.77
+systemctl is-active smart-camera.service          # 应为 active
+systemctl is-enabled smart-camera.service         # 应为 enabled
+
+# 4) 验证功能
+curl -s http://127.0.0.1:5000/api/system/status | python3 -m json.tool
+# 或直接浏览器打开 http://<当前IP>:5000
+
+# 5) 把代码同步到电脑上最新的提交（Pi 连不上 GitHub，用 bundle）
+#    见 CONTRIBUTING.md 第 4 节；PC 上先 git push，再生成增量 bundle 传过去
+```
+
+### 13.4 如果上电后异常
+
+| 现象 | 处理 |
+| --- | --- |
+| 连不上 / 完全没反应 | 检查电源适配器（2GB 机型用 5V/3A）、网线或 WiFi 是否插好；看路由器里有没有 `smartCamera` |
+| 能连上但服务 `inactive` | `journalctl -u smart-camera.service -b` 看退出原因；`ExecStartPre` 等不到 `/dev/video0` 说明摄像头没插好 |
+| 服务 `active` 但没画面 | 摄像头 USB 松动 → `v4l2-ctl --list-devices` 确认；重启服务 |
+| 语音不工作 | `arecord -l` 看麦克风是否枚举；`/api/speech/status` 的 `device`/`last_level_dbfs` |
+| 传感器没数据 | 端口 333 权限是否还在（会自动回退 1333）；单片机是否上电、目标端口是否一致 |
+
+> **建议**：把树莓派的 IP 在路由器上做 DHCP 静态绑定，否则每次断电重启后文档里的
+> `192.168.137.77` 都可能失效。
