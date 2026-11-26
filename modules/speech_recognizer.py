@@ -122,9 +122,12 @@ class SpeechRecognizer:
         enabled: str | bool = "auto",
         partial_interval: float = 0.5,
         min_dbfs: float = -50.0,
+        text_callback=None,
     ):
         self.socketio = socketio
         self.store = store
+        # 每句话的最终文本除了推送/存库，还会交给这个回调（用于语音指令解析）
+        self.text_callback = text_callback
         self.model_dir = Path(model_dir) if model_dir else None
         # 为 None 时在启动阶段自动探测
         self.device = device
@@ -361,6 +364,12 @@ class SpeechRecognizer:
                 except Exception as exc:
                     print(f"[Speech] 保存识别结果失败: {exc}")
             self.socketio.emit("speech_result", payload)
+            # 最终文本交给指令解析；解析失败不能影响识别主流程
+            if self.text_callback is not None:
+                try:
+                    self.text_callback(text)
+                except Exception as exc:
+                    print(f"[Speech] 指令回调异常: {type(exc).__name__}: {exc}")
         else:
             self.socketio.emit("speech_partial", payload)
 

@@ -7,6 +7,7 @@ This package contains the core components of the smart camera system:
 - FastFrameProcessor: Keyframe extraction based on motion detection
 - SensorServer: UDP server for receiving sensor data
 - SpeechRecognizer: Offline speech recognition (vosk + arecord)
+- VoiceCommandRouter: Maps recognized text to actions such as camera on/off
 - DataStore: Lightweight storage for sensor, detection and speech history
 """
 from .camera_stream import CameraStream
@@ -14,6 +15,7 @@ from .yolo_processor import YoloProcessor
 from .frame_processor import FastFrameProcessor
 from .sensor_server import SensorServer
 from .speech_recognizer import SpeechRecognizer
+from .voice_commands import VoiceCommandRouter, describe_commands
 from .data_store import DataStore
 
 __all__ = [
@@ -22,5 +24,7 @@ __all__ = [
     "FastFrameProcessor",
     "SensorServer",
     "SpeechRecognizer",
+    "VoiceCommandRouter",
+    "describe_commands",
     "DataStore",
 ]

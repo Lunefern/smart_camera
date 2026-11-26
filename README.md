@@ -30,6 +30,7 @@ smart_camera/
 │  ├─ frame_processor.py
 │  ├─ sensor_server.py
 │  ├─ speech_recognizer.py  # 离线语音识别（vosk + arecord）
+│  ├─ voice_commands.py     # 语音指令匹配（打开/关闭摄像头）
 │  └─ yolo_processor.py
 ├─ scripts/
 │  └─ download_vosk_model.sh  # 下载 vosk 中文模型（模型不进仓库）
@@ -405,6 +406,50 @@ curl -X POST http://127.0.0.1:5000/api/speech/stop
 
 vosk 输出不带标点、词间带空格，属正常现象。
 
+## 语音指令
+
+识别出来的整句话会先过一层指令匹配（`modules/voice_commands.py`），命中就执行动作，
+没命中才当普通识别结果处理。
+
+| 指令 | 触发短语（归一化后） | 动作 |
+| --- | --- | --- |
+| 打开摄像头 | `打开摄像头` `开启摄像头` `启动摄像头` `打开相机` `开摄像头` `摄像头打开` | 启动采集链路（摄像头 + YOLO + 关键帧） |
+| 关闭摄像头 | `关闭摄像头` `关掉摄像头` `停止摄像头` `关闭相机` `关摄像头` `摄像头关闭` | 停止采集链路并释放摄像头 |
+
+### 匹配为什么做得这么保守
+
+vosk 输出是「打开 摄像头」这种带空格的词串，所以先去掉空格和标点再比对。
+短语必须出现在**句首、句尾或整句**，且多出来的字不超过 **2 个**：
+
+- 「打开 摄像头」「打开摄像头吧」「请打开摄像头」→ 命中
+- 「我待会儿去关掉那个摄像头再试试看」「把摄像头打开一点角度吧」→ **不命中**
+
+这样能避免背景人声里顺口提到「摄像头」就误关/误开设备。
+
+### 加新指令
+
+1. 在 `modules/voice_commands.py` 的 `COMMANDS` 里加一条（id、描述、短语）
+2. 在 `app.py` 的 `voice_router` 注册对应动作函数：
+
+```python
+voice_router = VoiceCommandRouter(socketio, {
+    "camera_on": start_camera_pipeline,
+    "camera_off": stop_camera_pipeline,
+    # "take_photo": take_photo,
+})
+```
+
+### 接口与前端
+
+- `GET /api/voice/commands`：当前支持的指令 + 最近一次执行结果
+- `POST /api/voice/command`：用文本模拟指令，**不用开口就能测整条链路**
+  ```bash
+  curl -X POST http://127.0.0.1:5000/api/voice/command \
+       -H 'Content-Type: application/json' -d '{"text": "打开 摄像头"}'
+  ```
+- WebSocket：`voice_command` 推送执行结果（含成功/失败与错误信息）
+- 前端「语音识别」卡片最后一行显示最近一次指令结果，失败时同时写进告警日志
+
 ## 后台运行
 
 `nohup`、`setsid`、systemd 这类方式启动时 stdin 不是终端，flask-socketio 默认会拒绝
@@ -450,6 +495,11 @@ setsid nohup python app.py > run.log 2>&1 < /dev/null &
 - `GET /api/speech/history?n=20`：识别历史
 - `POST /api/speech/start` / `POST /api/speech/stop`：运行时启停语音识别
 
+### 语音指令
+
+- `GET /api/voice/commands`：支持的指令列表 + 最近一次执行结果
+- `POST /api/voice/command`：`{"text": "打开 摄像头"}`，用文本模拟一条指令
+
 ### 运行状态
 
 - `GET /api/system/status`：Python 版本、CPU 架构、YOLO 后端、传感器绑定状态、摄像头状态、语音识别状态
@@ -466,6 +516,7 @@ setsid nohup python app.py > run.log 2>&1 < /dev/null &
 - `speech_status`：推送语音识别状态（加载中 / 监听中 / 异常等）
 - `speech_partial`：推送识别中间结果（说半句时的文本）
 - `speech_result`：推送一句话的最终识别结果
+- `voice_command`：推送语音指令执行结果（`{"command","description","ok","error"}`）
 
 ## 传感器输入格式
 

@@ -65,6 +65,7 @@ from modules.frame_processor import FastFrameProcessor
 from modules.data_store import DataStore
 from modules.yolo_processor import YoloProcessor
 from modules.speech_recognizer import SpeechRecognizer
+from modules.voice_commands import VoiceCommandRouter, describe_commands
 
 # 项目根目录，后续所有相对路径都统一从这里派生，避免不同工作目录导致路径错乱。
 BASE_DIR = Path(__file__).resolve().parent
@@ -192,6 +193,46 @@ frame_processor = FastFrameProcessor(
 )
 frame_processor.bind_queue(frame_queue)
 
+
+# ── 采集链路的启停（HTTP 接口和语音指令共用）──────────────────
+def start_camera_pipeline() -> dict:
+    """启动摄像头 + YOLO + 关键帧处理，并推送一次视频源状态。"""
+    frame_processor.reset_state()
+    camera.start()
+    yolo.start()
+    frame_processor.start()
+    status = camera.get_source_status()
+    try:
+        socketio.emit("camera_source_update", status | {"options": VIDEO_SOURCE_OPTIONS})
+    except Exception as exc:
+        print(f"[App] 推送视频源状态失败: {exc}")
+    print("[App] 采集链路已启动")
+    return status
+
+
+def stop_camera_pipeline() -> dict:
+    """停止关键帧处理 + YOLO + 摄像头，并推送一次视频源状态。"""
+    yolo.stop()
+    frame_processor.stop()
+    camera.stop()
+    status = camera.get_source_status()
+    try:
+        socketio.emit("camera_source_update", status | {"options": VIDEO_SOURCE_OPTIONS})
+    except Exception as exc:
+        print(f"[App] 推送视频源状态失败: {exc}")
+    print("[App] 采集链路已停止")
+    return status
+
+
+# 语音指令路由：指令文本 -> 具体动作。后续要加「拍照」「开灯」等，只需在这里注册。
+voice_router = VoiceCommandRouter(
+    socketio,
+    {
+        "camera_on": start_camera_pipeline,
+        "camera_off": stop_camera_pipeline,
+    },
+)
+
 # 语音识别独立于视频链路：没装 vosk 或没有麦克风时只会显示状态提示，不影响其它功能。
 speech = SpeechRecognizer(
     socketio,
@@ -200,6 +241,8 @@ speech = SpeechRecognizer(
     device=SPEECH_DEVICE,
     enabled=SPEECH_ENABLED,
     min_dbfs=SPEECH_MIN_DBFS,
+    # 每句话的最终文本都交给指令路由，命中「打开/关闭 摄像头」就执行
+    text_callback=voice_router.handle,
 )
 
 # ── HTTP 路由 ─────────────────────────────────────────────────
@@ -237,23 +280,15 @@ def api_detections():
 
 @app.route("/api/camera/start", methods=["POST"])
 def api_camera_start():
-    # 启动顺序：
-    # 先启动摄像头，确保 frame_queue 中开始有帧流入；
-    # 再启动 YOLO 和关键帧处理器，避免处理器启动时队列还是空的。
-    frame_processor.reset_state()
-    camera.start()
-    yolo.start()
-    frame_processor.start()
+    # 启动顺序在 start_camera_pipeline() 里：先启动摄像头让队列有帧，
+    # 再启动 YOLO 和关键帧处理器。语音指令走同一套逻辑。
+    start_camera_pipeline()
     return jsonify({"status": "started"})
 
 @app.route("/api/camera/stop", methods=["POST"])
 def api_camera_stop():
-    # 停止时反过来收尾：
-    # 先停止处理器，避免它继续从队列取帧；
-    # 再关闭摄像头释放底层视频句柄。
-    yolo.stop()
-    frame_processor.stop()
-    camera.stop()
+    # 停止顺序反过来：先停处理器，再关摄像头释放句柄。
+    stop_camera_pipeline()
     return jsonify({"status": "stopped"})
 
 @app.route("/api/camera/source", methods=["GET"])
@@ -361,6 +396,31 @@ def api_speech_stop():
     speech.stop()
     return jsonify(speech.get_status())
 
+# ── 语音指令 ──────────────────────────────────────────────────
+@app.route("/api/voice/commands")
+def api_voice_commands():
+    """返回当前支持的语音指令及触发短语。"""
+    return jsonify({
+        "commands": describe_commands(),
+        "last_result": voice_router.get_last_result(),
+    })
+
+@app.route("/api/voice/command", methods=["POST"])
+def api_voice_command():
+    """用文本模拟一条语音指令（方便不开口就能测试指令链路）。
+
+    请求体: {"text": "打开 摄像头"}
+    """
+    data = request.get_json(silent=True) or request.form or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"error": "missing text"}), 400
+
+    result = voice_router.handle(text)
+    if result is None:
+        return jsonify({"matched": False, "text": text})
+    return jsonify({"matched": True, **result})
+
 @app.route("/api/system/status")
 def api_system_status():
     """返回运行环境与各模块状态，方便在树莓派这类设备上快速排查问题。"""
@@ -372,6 +432,10 @@ def api_system_status():
         "sensor": sensor.get_status(),
         "camera": camera.get_source_status(),
         "speech": speech.get_status(),
+        "voice": {
+            "commands": describe_commands(),
+            "last_result": voice_router.get_last_result(),
+        },
         "frames": {
             "output_dir": str(BASE_DIR / "AviToFrame" / "frames_local"),
             "max_saved_images": FRAME_STORAGE_LIMIT,

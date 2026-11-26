@@ -211,6 +211,7 @@
       <div id="speech-final" style="font-size:17px;font-weight:600;line-height:1.45;min-height:26px;color:#111827">--</div>
       <div id="speech-partial" style="font-size:13px;color:#9ca3af;min-height:18px;margin-top:6px"></div>
       <div class="storage-note" id="speech-detail">等待语音服务…</div>
+      <div class="storage-note" id="voice-command">语音指令：打开 摄像头 / 关闭 摄像头</div>
     </div>
 
     <div class="card">
@@ -351,6 +352,15 @@ socket.on("speech_result", (d) => {
   document.getElementById("speech-partial").textContent = "";
   document.getElementById("speech-detail").textContent =
     "识别于 " + new Date(d.timestamp).toLocaleTimeString() + (d.device ? " · " + d.device : "");
+});
+
+// 语音指令执行结果：命中「打开/关闭 摄像头」时后端会推这个事件
+socket.on("voice_command", (d) => {
+  const el = document.getElementById("voice-command");
+  const when = d.timestamp ? new Date(d.timestamp).toLocaleTimeString() : "";
+  const tail = d.ok ? "✅ 已执行" : "❌ " + (d.error || "执行失败");
+  el.textContent = `${when}「${d.text}」→ ${d.description} ${tail}`;
+  if (!d.ok) addAlert("语音指令执行失败: " + (d.error || d.description), "warn");
 });
 
 // ── 检测结果处理 ───────────────────────────────────────────
