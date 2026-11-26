@@ -207,6 +207,13 @@
     </div>
 
     <div class="card">
+      <div class="card-title">语音识别 <span class="badge offline" id="speech-badge" style="margin-left:6px">未启动</span></div>
+      <div id="speech-final" style="font-size:17px;font-weight:600;line-height:1.45;min-height:26px;color:#111827">--</div>
+      <div id="speech-partial" style="font-size:13px;color:#9ca3af;min-height:18px;margin-top:6px"></div>
+      <div class="storage-note" id="speech-detail">等待语音服务…</div>
+    </div>
+
+    <div class="card">
       <div class="card-title">距离 / 湿度 / 温度趋势</div>
       <div class="chart-wrap">
         <canvas id="trend-chart"></canvas>
@@ -304,6 +311,46 @@ socket.on("sensor_update", (d) => {
 
   // 一个非常基础的告警规则示例：温度超过阈值就往日志里打一条。
   if (d.temperature > 35) addAlert(`温度过高: ${d.temperature}°C`, "warn");
+});
+
+// ── 语音识别 ───────────────────────────────────────────────
+// 后端用 vosk 做离线识别：speech_status 报状态，speech_partial 是识别中的中间文本，
+// speech_result 是一句话说完后的最终文本（会写进数据库）。
+const SPEECH_BADGE = {
+  running:  ["ok",      "识别中"],
+  loading:  ["warn",    "加载模型"],
+  idle:     ["offline", "未启动"],
+  stopped:  ["offline", "已停止"],
+  disabled: ["offline", "已关闭"],
+  error:    ["warn",    "异常"],
+};
+
+socket.on("speech_status", (d) => {
+  const badge = document.getElementById("speech-badge");
+  const [cls, text] = SPEECH_BADGE[d.state] || ["offline", d.state || "未知"];
+  badge.className = "badge " + cls;
+  badge.textContent = text;
+
+  const parts = [];
+  if (d.device) parts.push("麦克风 " + d.device);
+  if (d.model_dir) parts.push("模型 " + d.model_dir.split("/").pop());
+  if (Array.isArray(d.available_devices) && d.available_devices.length) {
+    parts.push(d.available_devices.length + " 个录音设备");
+  }
+  const detail = document.getElementById("speech-detail");
+  detail.textContent = (d.message || "") + (parts.length ? " · " + parts.join(" · ") : "");
+});
+
+socket.on("speech_partial", (d) => {
+  document.getElementById("speech-partial").textContent = (d && d.text) ? d.text : "";
+});
+
+socket.on("speech_result", (d) => {
+  if (!d || !d.text) return;
+  document.getElementById("speech-final").textContent = d.text;
+  document.getElementById("speech-partial").textContent = "";
+  document.getElementById("speech-detail").textContent =
+    "识别于 " + new Date(d.timestamp).toLocaleTimeString() + (d.device ? " · " + d.device : "");
 });
 
 // ── 检测结果处理 ───────────────────────────────────────────

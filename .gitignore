@@ -16,6 +16,12 @@ log.log
 run.log
 AviToFrame/tmp.avi
 
+# ── 语音模型 ──
+# vosk 模型目录较大（small 中文模型解压后约 66MB），不进仓库，
+# 用 scripts/download_vosk_model.sh 或按 README 手动下载
+vosk-model-*/
+*.zip
+
 # ── 系统 ──
 .DS_Store
 Thumbs.db

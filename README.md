@@ -22,20 +22,24 @@ smart_camera/
 ├─ run.sh                   # 启动脚本：自动使用 .venv 里的解释器
 ├─ diagnose_env.py          # 运行环境自检（定位 Illegal instruction 之类崩溃）
 ├─ requirements.txt         # PC：含 ultralytics + torch
-├─ requirements-pi.txt      # 树莓派：不含 torch，走 OpenCV DNN
+├─ requirements-pi.txt      # 树莓派：不含 torch，走 OpenCV DNN + vosk
 ├─ README.md
 ├─ modules/
 │  ├─ camera_stream.py
 │  ├─ data_store.py
 │  ├─ frame_processor.py
 │  ├─ sensor_server.py
+│  ├─ speech_recognizer.py  # 离线语音识别（vosk + arecord）
 │  └─ yolo_processor.py
+├─ scripts/
+│  └─ download_vosk_model.sh  # 下载 vosk 中文模型（模型不进仓库）
 ├─ templates/
 │  └─ index.html
 ├─ YOLOModel/
 │  ├─ best.pt               # torch 后端权重
 │  ├─ best.onnx             # OpenCV DNN 后端权重
 │  └─ classes.json          # 类别名
+├─ vosk-model-small-cn-0.22/  # 语音模型（约 66MB，gitignore，需自己下载）
 └─ AviToFrame/
    ├─ tmp.avi
    ├─ main.py
@@ -316,6 +320,73 @@ curl -s http://127.0.0.1:5000/api/system/status | python -m json.tool
 | `SENSOR_PORT_FALLBACK` | `1333` | Linux 上 `SENSOR_PORT` 需要特权时自动回退到的端口 |
 | `FRAME_STORAGE_LIMIT` | `50` | 关键帧本地保留数量 |
 | `SMART_CAMERA_DIFF_THRESHOLD` | `4.0` | 关键帧判定阈值，越大越省盘 |
+| `SMART_CAMERA_SPEECH` | `auto` | 语音识别开关：`auto`（模型+设备都在就开）/ `1` / `0` |
+| `SMART_CAMERA_SPEECH_MODEL` | `vosk-model-small-cn-0.22` | vosk 模型目录 |
+| `SMART_CAMERA_SPEECH_DEVICE` | 自动 | ALSA 录音设备，如 `plughw:4,0`；留空自动选外接麦克风 |
+
+## 语音识别（vosk，离线）
+
+不需要联网，全部在本机算。流程：
+
+1. `arecord` 从 USB 麦克风读 16kHz / 16bit / 单声道裸 PCM
+2. vosk `KaldiRecognizer` 做流式识别
+3. 中间结果通过 `speech_partial` 实时推送，一句话结束时通过 `speech_result` 推送并写入数据库
+
+### 安装
+
+```bash
+# 1) Python 依赖（requirements-pi.txt 里已包含 vosk）
+pip install -r requirements-pi.txt
+
+# 2) 录音工具（树莓派一般自带，没有就装）
+sudo apt install -y alsa-utils
+
+# 3) 下载中文 small 模型（约 42MB，解压后 66MB）
+./scripts/download_vosk_model.sh
+```
+
+模型太大不进仓库（`.gitignore` 已排除 `vosk-model-*/`）。如果目标机器下载慢，
+可以在一台快的机器上跑 `./scripts/download_vosk_model.sh`，再把整个
+`vosk-model-small-cn-0.22/` 目录拷过去：
+
+```bash
+scp -r vosk-model-small-cn-0.22 admin@<pi>:~/smart_camera/
+```
+
+### 麦克风
+
+程序会自动跳过“摄像头 / HDMI / 板载声卡”的录音节点，选第一个外接 USB 麦克风
+（实测树莓派上是 `plughw:4,0`）。可以用下面的命令确认实际设备：
+
+```bash
+arecord -l                                       # 列出录音设备
+curl -s http://127.0.0.1:5000/api/speech/status  # 看程序选中的设备
+```
+
+电平偏低时（`arecord` 录出来的 RMS 比环境噪声高不了多少），说话离麦克风近一点，
+或者用 `SMART_CAMERA_SPEECH_DEVICE` 显式指定设备。
+
+### 资源占用（树莓派 4B）
+
+实测 small 模型解码实时率约 **1.0x**（5.85 秒音频耗时 5.60 秒），
+和 YOLO 同时跑时进程约 **276% CPU / 318MB 内存**，装散热片后温度约 **52°C**。
+2GB 内存够用，但 CPU 会比较满；不需要语音时可以：
+
+```bash
+SMART_CAMERA_SPEECH=0 ./run.sh      # 完全不加载语音
+# 或运行中调用接口临时关掉
+curl -X POST http://127.0.0.1:5000/api/speech/stop
+```
+
+### 实测效果
+
+用中文 TTS 生成「你好，智能摄像头已经启动。请打开灯光。」送进识别链路：
+
+```
+识别结果: 你好 智能 摄像头 已经 启动 请 打开 灯光
+```
+
+vosk 输出不带标点、词间带空格，属正常现象。
 
 ## 后台运行
 
@@ -355,9 +426,16 @@ setsid nohup python app.py > run.log 2>&1 < /dev/null &
 
 - `GET /api/detections?n=20`
 
+### 语音识别
+
+- `GET /api/speech/status`：状态、模型目录、当前录音设备、可用设备列表
+- `GET /api/speech/latest`：最近一条最终识别结果
+- `GET /api/speech/history?n=20`：识别历史
+- `POST /api/speech/start` / `POST /api/speech/stop`：运行时启停语音识别
+
 ### 运行状态
 
-- `GET /api/system/status`：Python 版本、CPU 架构、YOLO 后端、传感器绑定状态、摄像头状态
+- `GET /api/system/status`：Python 版本、CPU 架构、YOLO 后端、传感器绑定状态、摄像头状态、语音识别状态
 
 ## WebSocket 事件
 
@@ -368,6 +446,9 @@ setsid nohup python app.py > run.log 2>&1 < /dev/null &
 - `frame_update`：推送关键帧处理结果
 - `frame`：推送单帧快照
 - `detection_result`：推送 YOLO 检测结果
+- `speech_status`：推送语音识别状态（加载中 / 监听中 / 异常等）
+- `speech_partial`：推送识别中间结果（说半句时的文本）
+- `speech_result`：推送一句话的最终识别结果
 
 ## 传感器输入格式
 

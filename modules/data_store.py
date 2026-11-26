@@ -29,8 +29,11 @@ class DataStore:
         self._sensor_cache   = deque(maxlen=history_limit)
         # 检测记录单独保存一份最近历史，供前端回看。
         self._detection_cache= deque(maxlen=200)
+        # 语音识别结果单独一份历史。
+        self._speech_cache   = deque(maxlen=100)
         # 页面刚打开时会优先读这个值，作为“当前最新状态”。
         self._latest_sensor  = {}
+        self._latest_speech  = {}
         self._init_db()
 
     # ── 传感器数据 ────────────────────────────────────────────
@@ -69,6 +72,28 @@ class DataStore:
             data = list(self._detection_cache)
         return data[-n:]
 
+    # ── 语音识别记录 ──────────────────────────────────────────
+    def save_speech(self, payload: dict):
+        """保存一条最终识别结果（中间结果不落库，避免刷爆数据库）。"""
+        record = {
+            "timestamp": payload.get("timestamp"),
+            "text":      payload.get("text", ""),
+            "device":    payload.get("device"),
+            "model":     payload.get("model"),
+        }
+        with self._lock:
+            self._latest_speech = payload
+            self._speech_cache.append(record)
+        self._db_insert("speech_log", record)
+
+    def get_latest_speech(self) -> dict:
+        return dict(self._latest_speech)
+
+    def get_speech_history(self, n: int = 20) -> list:
+        with self._lock:
+            data = list(self._speech_cache)
+        return data[-n:]
+
     # ── SQLite 内部方法 ───────────────────────────────────────
     def _init_db(self):
         # 本地数据库初始化时自动建表，避免用户手动准备 schema。
@@ -92,6 +117,12 @@ class DataStore:
             CREATE TABLE IF NOT EXISTS detection_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT, detections TEXT
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS speech_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT, text TEXT, device TEXT, model TEXT
             )
         """)
         con.commit()

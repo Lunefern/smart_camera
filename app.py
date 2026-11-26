@@ -64,6 +64,7 @@ from modules.camera_stream import CameraStream
 from modules.frame_processor import FastFrameProcessor
 from modules.data_store import DataStore
 from modules.yolo_processor import YoloProcessor
+from modules.speech_recognizer import SpeechRecognizer
 
 # 项目根目录，后续所有相对路径都统一从这里派生，避免不同工作目录导致路径错乱。
 BASE_DIR = Path(__file__).resolve().parent
@@ -94,6 +95,16 @@ FRAME_STORAGE_LIMIT = int(os.getenv("FRAME_STORAGE_LIMIT", "50"))
 # 光线抖动、传感器噪声大的设备（比如树莓派接的普通 USB 摄像头）可以调高，
 # 否则会每秒写十几张图，既费 CPU 又费 SD 卡寿命。
 FRAME_DIFF_THRESHOLD = float(os.getenv("SMART_CAMERA_DIFF_THRESHOLD", "4.0"))
+
+# ── 语音识别（vosk，离线）────────────────────────────────────
+# 开关：auto（模型和设备都在就自动开）/ 1 / 0
+SPEECH_ENABLED = os.getenv("SMART_CAMERA_SPEECH", "auto")
+# vosk 模型目录。放到项目根目录，默认用 small 中文模型（约 66MB，2GB 内存够用）。
+SPEECH_MODEL_DIR = Path(
+    os.getenv("SMART_CAMERA_SPEECH_MODEL", str(BASE_DIR / "vosk-model-small-cn-0.22"))
+)
+# ALSA 录音设备。留空则自动挑第一个“非摄像头/非 HDMI”的录音设备（即外接 USB 麦克风）。
+SPEECH_DEVICE = os.getenv("SMART_CAMERA_SPEECH_DEVICE") or None
 
 # 视频源优先级：
 # 1) 环境变量 SMART_CAMERA_SOURCE
@@ -176,6 +187,15 @@ frame_processor = FastFrameProcessor(
     max_saved_images=FRAME_STORAGE_LIMIT,
 )
 frame_processor.bind_queue(frame_queue)
+
+# 语音识别独立于视频链路：没装 vosk 或没有麦克风时只会显示状态提示，不影响其它功能。
+speech = SpeechRecognizer(
+    socketio,
+    store,
+    model_dir=SPEECH_MODEL_DIR,
+    device=SPEECH_DEVICE,
+    enabled=SPEECH_ENABLED,
+)
 
 # ── HTTP 路由 ─────────────────────────────────────────────────
 @app.route("/")
@@ -309,6 +329,33 @@ def api_frame_cleanup():
     socketio.emit("frame_storage_update", payload)
     return jsonify({"status": "ok", **payload})
 
+# ── 语音识别 ──────────────────────────────────────────────────
+@app.route("/api/speech/status")
+def api_speech_status():
+    """返回语音识别状态：模型目录、当前录音设备、可用的录音设备列表。"""
+    return jsonify(speech.get_status())
+
+@app.route("/api/speech/latest")
+def api_speech_latest():
+    """返回最近一条最终识别结果。"""
+    return jsonify(store.get_latest_speech() or speech.get_latest())
+
+@app.route("/api/speech/history")
+def api_speech_history():
+    """返回最近 N 条识别历史，参数 `n` 可选。"""
+    n = request.args.get("n", 20, type=int)
+    return jsonify(store.get_speech_history(n))
+
+@app.route("/api/speech/start", methods=["POST"])
+def api_speech_start():
+    speech.start()
+    return jsonify(speech.get_status())
+
+@app.route("/api/speech/stop", methods=["POST"])
+def api_speech_stop():
+    speech.stop()
+    return jsonify(speech.get_status())
+
 @app.route("/api/system/status")
 def api_system_status():
     """返回运行环境与各模块状态，方便在树莓派这类设备上快速排查问题。"""
@@ -319,6 +366,7 @@ def api_system_status():
         "yolo": yolo.get_status(),
         "sensor": sensor.get_status(),
         "camera": camera.get_source_status(),
+        "speech": speech.get_status(),
         "frames": {
             "output_dir": str(BASE_DIR / "AviToFrame" / "frames_local"),
             "max_saved_images": FRAME_STORAGE_LIMIT,
@@ -343,6 +391,13 @@ def on_connect(auth=None):
     except Exception as exc:
         print(f"[WS] 推送关键帧存储状态失败: {exc}")
     emit("yolo_status_update", yolo.get_status())
+    try:
+        emit("speech_status", speech.get_status())
+        latest_speech = store.get_latest_speech()
+        if latest_speech:
+            emit("speech_result", latest_speech)
+    except Exception as exc:
+        print(f"[WS] 推送语音状态失败: {exc}")
     latest_yolo = yolo.get_latest_payload()
     if latest_yolo:
         emit("detection_result", latest_yolo)
@@ -421,6 +476,7 @@ if __name__ == "__main__":
     print(f"[App] YOLO 后端: {YOLO_BACKEND} (imgsz={YOLO_IMGSZ}, interval={YOLO_INTERVAL})")
     print(f"[App] 视频源: {DEFAULT_STREAM_SOURCE}")
     print(f"[App] 传感器端口: {sensor.port}（Linux 上 <1024 会自动回退到 1333）")
+    print(f"[App] 语音识别: {SPEECH_ENABLED}（模型: {SPEECH_MODEL_DIR.name}）")
     print("=" * 60)
     # 先确认端口可用，再启动会独占摄像头的采集线程。
     web_port = int(os.getenv("SMART_CAMERA_PORT", "5000"))
@@ -429,6 +485,7 @@ if __name__ == "__main__":
     camera.start()          # 从本地摄像头 / RTSP 开始采集帧
     yolo.start()            # YOLO 识别结果直接推给前端
     frame_processor.start()  # 持续抽取关键帧并向前端推送
+    speech.start()          # 离线语音识别（没模型/没麦克风时只会显示状态提示）
     # Flask 的 debug 模式默认会启用自动重载，这会让后台线程在父进程和子进程里各启动一次。
     # 对视频流和 UDP 监听来说，这通常会造成重复连接、重复消费和难以排查的解码噪声。
     # 这里保留 debug 页面，但关闭 reloader，保证采集链路只启动一份。

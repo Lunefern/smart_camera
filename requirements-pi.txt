@@ -22,4 +22,8 @@ requests
 numpy
 opencv-python
 
+# 离线语音识别（小模型 vosk-model-small-cn-0.22 约 66MB，2GB 内存够用）
+# 模型本身不进仓库，用 scripts/download_vosk_model.sh 下载
+vosk
+
 # 说明：不需要 onnxruntime，OpenCV 已经内置 ONNX 推理能力。
