@@ -1,0 +1,34 @@
+[Unit]
+Description=Smart Camera (Flask + YOLO + 语音识别)
+Documentation=file:///home/admin/smart_camera/README.md
+# 摄像头和麦克风都是 USB 设备，等系统基本就绪再启动
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+WorkingDirectory=/home/admin/smart_camera
+
+# 开机时 USB 设备枚举可能比 systemd 慢，先等摄像头节点和声卡都出现（最多 30 秒）
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do [ -e /dev/video0 ] && arecord -l 2>/dev/null | grep -q "^card" && break; sleep 1; done'
+
+# run.sh 会切换到 .venv 里的解释器（exec，systemd 能正确跟踪主进程）
+ExecStart=/home/admin/smart_camera/run.sh
+
+# 异常退出后自动拉起（间隔 5 秒）
+Restart=always
+RestartSec=5
+
+# 停止时先 SIGTERM，让 arecord 子进程和摄像头句柄正常释放
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# 输出同时写进 journal 和项目里的 run.log，方便沿用现有的排查方式
+StandardOutput=append:/home/admin/smart_camera/run.log
+StandardError=append:/home/admin/smart_camera/run.log
+
+[Install]
+WantedBy=multi-user.target
